@@ -43,41 +43,54 @@ def _load_model():
 
 
 def do_classify(image: Image.Image, meta: Dict[str, Any]) -> Dict[str, Any]:
-    
     """
     对输入图像进行零样本场景分类。
-
-    使用 open_clip 分别编码图像与 8 个英文 prompt，按余弦相似度取 argmax，
-    并将英文 prompt 映射回中文标签返回。
+    使用多 prompt 投票提高准确率。
     """
-    
     _load_model()
     
-    # 从平台请求中读取合法类别列表（这是关键！）
     class_names = meta.get("class_names", [])
-    
-    # 兜底：如果平台没下发（理论上不会），用默认8类
     if not class_names:
         class_names = ["办公室", "公园", "街道", "商场", "厨房", "卧室", "图书馆", "体育馆"]
     
-    # 动态生成英文提示，不管类别是中文还是英文
-    prompts = [f"a photo of a {name}" for name in class_names]
+    # ---- 改动只有这里：从 1 条 prompt 变成 5 条 ----
+    prompt_templates = [
+        "a photo of a {}, typical scene",
+        "an image of a {} environment",
+        "a picture of a {}",
+        "a view of a {}",
+        "a scene with a {}",
+    ]
     
-    # 动态生成文本特征（因为每次类别可能不同）
-    text_tokens = _tokenizer(prompts).to(_device)
+    all_prompts = []
+    for name in class_names:
+        for template in prompt_templates:
+            all_prompts.append(template.format(name))
+    # --------------------------------------------
+    
+    text_tokens = _tokenizer(all_prompts).to(_device)
     with torch.no_grad():
         text_features = _model.encode_text(text_tokens)
         text_features /= text_features.norm(dim=-1, keepdim=True)
     
-    # 计算图像特征
     image_tensor = _transform(image).unsqueeze(0).to(_device)
     with torch.no_grad():
         image_features = _model.encode_image(image_tensor)
         image_features /= image_features.norm(dim=-1, keepdim=True)
     
-    # 计算相似度，取最高分
     similarity = (image_features @ text_features.T).squeeze(0)
-    best_idx = int(similarity.argmax())
-    label = class_names[best_idx]  # 直接用平台下发的类别名
     
+    # ---- 改动只有这里：取平均分 ----
+    num_classes = len(class_names)
+    num_templates = len(prompt_templates)
+    class_scores = []
+    for i in range(num_classes):
+        start = i * num_templates
+        end = start + num_templates
+        class_scores.append(similarity[start:end].mean())
+    
+    best_idx = int(torch.tensor(class_scores).argmax())
+    # --------------------------------
+    
+    label = class_names[best_idx]
     return {"label": label}
