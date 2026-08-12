@@ -1,0 +1,28 @@
+[project]
+name = "zhongkong-cup-final-algorithm"
+version = "0.1.0"
+description = "中控杯复赛选手算法服务（HTTP）。由测试工具调用 health + 3 个 task 接口，内部驱动 FTArm B9 机械臂、O10 灵巧手、Gemini335 视觉完成赛题 1/2/3。"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "aiohttp>=3.9",
+    "pyyaml>=6.0",
+    "opencv-contrib-python>=4.8",
+    "numpy>=1.26",
+    "requests>=2.31",
+    "websockets>=12.0",
+    "pytesseract>=0.3.10",
+]
+
+[project.optional-dependencies]
+vision = ["pyorbbecsdk2>=2.0.15"]   # Gemini335；新包装名pyorbbecsdk2，导入名仍为pyorbbecsdk；未安装时 health 仍 200，赛题返回 camera not ready
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+algorithm_service = "algorithm_service.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["algorithm_service*"]

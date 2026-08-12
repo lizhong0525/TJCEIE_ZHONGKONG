@@ -18,3 +18,10 @@ __pycache__/
 *.log
 *.tmp
 *.bak
+
+# 复赛：现场参数与运行期产物不入库
+config.json
+data/
+results/
+output/
+运行相机检查/

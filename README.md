@@ -132,3 +132,21 @@ python local_test.py
 - 分类任务返回的标签必须与平台下发的 `meta.class_names` 中的中文标签一致
 - OCR 任务需按 `meta.normalize_rules` 对输出做规范化处理
 - 单次推理须在 `meta.infer_T_max_ms` 内完成
+
+---
+
+# 复赛：选手算法服务 + Gemini335 相机标定模块（张云飞）
+
+复赛赛题 2（外操无人化）的选手侧算法服务，从 `使用说明.md` 和 `TODO.md` 开始。
+
+- `algorithm_service/`：HTTP 算法服务（`/api/health` + task1/2/3），驱动 FTArm B9 机械臂、O10 灵巧手、Gemini335 视觉
+- `vision/`：Gemini335 采集与 D2C 对齐、内参导出、眼在手上手眼标定、台面 RANSAC 拟合、三赛题视觉入口（与 `algorithm_service/` 相互独立，安装相机专用依赖不影响现有服务）
+- `tools/`：标定与自检脚本（相机检查、内参导出、手眼采样/求解、台面拟合、两个自检）
+- `config/site.yaml`：现场标定统一出口；`config.example.json`：相机模块配置模板（首次使用复制为 `config.json`，不入库）
+- `docs/`：赛题文档、机械臂/灵巧手接口文档、现场标定说明
+- `测试工具/`：官方算法测试器；`接口示例/`：官方 mock 服务参考
+
+推荐顺序：检查相机 → 导出内参 → 采集手眼样本 → 求解手眼 → 拟合台面 → 调任务识别。
+无相机时可双击 `运行离线自检.bat`；服务端到端自检为 `python -m tools.service_selftest`。
+
+注意：视觉标定产物（`results/*.json`）→ `site.yaml` 的映射与交叉校验未接线前，视觉结果不得直接用于真机运动。
