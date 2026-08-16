@@ -149,6 +149,11 @@ class ContestantRequestHandler(BaseHTTPRequestHandler):
             )
             return None
 
+        if content_length == 0:
+            # 与 01 真服务行为对齐：空 body 按 {} 处理（真服务 _read_json_or_empty
+            # 对空 body 直接放行；不对齐的话 mock 阶段 400、真机阶段 200，误导排查）
+            return {}
+
         raw_body = self.rfile.read(content_length)
         try:
             decoded_body = raw_body.decode("utf-8")

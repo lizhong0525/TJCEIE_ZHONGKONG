@@ -24,6 +24,10 @@
 12. 全占位配置（未标定）：task1 → "panel.lamps 未配置"；task2 → "expected_count 未标定"
     （A3 防线，数量校验不得失效）；task3 → "未标定"（且绝不是裸 ValueError）。
 13. 并发互斥：执行中再发同题 → 第二个拿到 busy。
+14. 单元级（第四轮修复落盘，直接调 task/planner 不走 HTTP）：
+    task2 重拍选帧 3 种（恰够 expected 优先 / 更接近当选 / 打平保留首帧）、
+    safe_home 2 种（半标定报轴名 / 全占位回退默认）、报错文案 2 种
+    （重拍失败标注"已重拍一次" / 数量校验提示不写死块数）。
 
 用法：``python -m tools.service_selftest``，失败 exit 1。
 """
@@ -340,6 +344,129 @@ async def _start(app) -> tuple[Any, int]:
 
 
 # ---------------------------------------------------------------------------
+# 单元级场景（第四轮修复的回归防线，直接调 task/planner，不走 HTTP）
+# ---------------------------------------------------------------------------
+
+
+def _unit_scenarios(report: Report) -> None:
+    """task2 重拍选帧 3 种 + safe_home 2 种 + 报错文案 2 种。"""
+
+    import copy
+
+    from algorithm_service.config import PLACEHOLDER, from_dict
+    from algorithm_service.planner import PickError, Pose, safe_home
+    from algorithm_service.tasks import task2
+    from algorithm_service.tasks.task2_vision import _Detected
+
+    def fake_detected(n: int) -> list[Any]:
+        return [_Detected(block_id=i, digit=i + 1, pick=Pose(0.25, -0.12, 0.45))
+                for i in range(n)]
+
+    seq: list[int] = []
+    calls = {"n": 0}
+
+    def fake_recognize(color: Any, depth: Any, cfg: Any) -> list[Any]:
+        v = seq[min(calls["n"], len(seq) - 1)]
+        calls["n"] += 1
+        return fake_detected(v)
+
+    def run_task2(cfg_raw: dict[str, Any] | None = None) -> list[Any]:
+        cfg = from_dict(copy.deepcopy(cfg_raw or MOCK_CFG_RAW))
+        img = blank_image()
+        return task2.run(MockArm(), MockHand(), cfg,
+                         lambda: {"color": img, "depth": None})
+
+    def scenario(name: str, fn: Any) -> None:
+        t0 = time.perf_counter()
+        try:
+            detail = fn()
+            report.add(name, True, (time.perf_counter() - t0) * 1000, str(detail))
+        except Exception as e:  # noqa: BLE001
+            report.add(name, False, (time.perf_counter() - t0) * 1000,
+                       f"{type(e).__name__}: {e}")
+
+    orig = task2.recognize_digits
+    task2.recognize_digits = fake_recognize
+    try:
+        def s_exact() -> str:
+            seq[:] = [5, 4]
+            calls["n"] = 0
+            placed = run_task2()
+            assert len(placed) == 4, f"应放 4 块，实际 {len(placed)}"
+            return "首帧误检 5 个被丢弃，重拍恰够 4 个全入槽"
+
+        def s_closer() -> str:
+            seq[:] = [2, 3]
+            calls["n"] = 0
+            try:
+                run_task2()
+            except PickError as e:
+                assert "got 3" in str(e), f"报错数字错: {e}"
+                return str(e)
+            raise AssertionError("数量不足应失败")
+
+        def s_tie() -> str:
+            seq[:] = [5, 3]
+            calls["n"] = 0
+            try:
+                run_task2()
+            except PickError as e:
+                assert "got 5" in str(e), f"报错数字错: {e}"
+                return str(e)
+            raise AssertionError("数量不对应失败")
+
+        scenario("重拍选帧-恰够 expected 优先", s_exact)
+        scenario("重拍选帧-更接近当选", s_closer)
+        scenario("重拍选帧-打平保留首帧", s_tie)
+
+        def s_msg_retry() -> str:
+            seq[:] = [1, 2]
+            calls["n"] = 0
+            try:
+                run_task2()
+            except PickError as e:
+                assert "got 2" in str(e) and "已重拍一次" in str(e), str(e)
+                return str(e)
+            raise AssertionError("数量不足应失败")
+
+        def s_msg_count() -> str:
+            raw = copy.deepcopy(MOCK_CFG_RAW)
+            raw["digit_blocks"]["expected_count"] = PLACEHOLDER
+            try:
+                run_task2(raw)
+            except PickError as e:
+                assert "expected_count" in str(e) and "4 块" not in str(e), str(e)
+                return str(e)
+            raise AssertionError("expected_count 占位应拒动")
+
+        scenario("文案-重拍失败标注重拍", s_msg_retry)
+        scenario("文案-数量校验不写死块数", s_msg_count)
+    finally:
+        task2.recognize_digits = orig
+
+    def s_partial_home() -> str:
+        raw = copy.deepcopy(MOCK_CFG_RAW)
+        raw["service"]["safe_home"] = {"x": 0.30}
+        try:
+            safe_home(MockArm(), from_dict(raw))
+        except PickError as e:
+            assert "service.safe_home.y" in str(e), f"没报清轴名: {e}"
+            return str(e)
+        raise AssertionError("半标定应抛错")
+
+    def s_full_placeholder_home() -> str:
+        raw = copy.deepcopy(MOCK_CFG_RAW)
+        raw["service"]["safe_home"] = {"x": PLACEHOLDER, "y": PLACEHOLDER, "z": PLACEHOLDER}
+        arm = MockArm()
+        safe_home(arm, from_dict(raw))
+        assert arm.visited(0.275, 0.0, 0.48), arm.calls
+        return "回退内置默认位 (0.275, 0, 0.48)"
+
+    scenario("safe_home 半标定→报轴名", s_partial_home)
+    scenario("safe_home 全占位→回退默认", s_full_placeholder_home)
+
+
+# ---------------------------------------------------------------------------
 # 自检流程
 # ---------------------------------------------------------------------------
 
@@ -568,6 +695,8 @@ async def main_async(args: list[str]) -> int:
         report.add("并发互斥 busy", False, (time.perf_counter() - t0) * 1000, str(e))
     finally:
         await runner3.cleanup()
+
+    _unit_scenarios(report)
 
     report.print()
     return 0 if report.passed() else 1

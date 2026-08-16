@@ -20,6 +20,8 @@ mock 常用参数：`--taskX-mode success|failure|http-error|invalid-json|empty`
 
 拷贝后实跑验证：`GET /api/health`、`POST /api/task1/execute`、`POST /api/task2/execute` 均返回 `{"success":true,...}` ✓
 
+**2026-08-16 晚补充**：`POST /api/task3/execute` 实跑 success ✓（此前漏验）；修 BUG-4——空 body（`Content-Type: application/json` 但无内容）原来 400，与 01 真服务（按 `{}` 放行）行为不一致，已对齐，实测空 body 返回 200 success。注意此修改只在本副本，`../../接口示例/` 的官方原版未动。
+
 ## 还剩
 
 - 第 5 步的软件超时实测（要开着 WPF 测试工具手动点）
