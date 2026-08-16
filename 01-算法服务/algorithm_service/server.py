@@ -175,7 +175,7 @@ def default_runner(cfg: SiteConfig) -> TaskRunner:
         result = await loop.run_in_executor(
             None, task3.run, arm, hand, cfg, capture,
         )
-        return {"placed": result.placed, "skipped": result.skipped}
+        return {"placed": result.placed, "skipped": result.skipped, "failed": result.failed}
 
     # 避免 lint 警告 hand_pose_table 未用；如需在 task 内切换姿态可在这里 import
     _ = hand_pose_table

@@ -3,7 +3,7 @@
 最小可用版本（用于联调与自检）：
 
 * 轮廓检测找矩形外接 → 计算 ``(u, v)`` 中心。
-* 数字 OCR：用 tesseract（``D:\\OCR\\tesseract.exe``）的 ``--psm 8``（单字模式）。
+* 数字 OCR：tesseract ``--psm 8``（单字模式）；候选 exe 必须带 eng.traineddata。
 * 深度有效时通过 ``Vision.pixel_to_base`` 转基座坐标；无深度图时回退
   ``digit_blocks.staging_area``（必须已标定，否则抛 ``PickError``；仅自检场景合理）。
 
@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,11 +33,32 @@ class _Detected:
     pick: Pose
 
 
+def _tessdata_ok(exe: str) -> bool:
+    """该 tesseract 是否有可用的 eng 语言数据（没有会在 OCR 时报 Failed loading language）。"""
+
+    prefix = os.environ.get("TESSDATA_PREFIX")
+    if prefix and (Path(prefix) / "eng.traineddata").exists():
+        return True
+    return (Path(exe).parent / "tessdata" / "eng.traineddata").exists()
+
+
 def _tesseract_cmd() -> str | None:
-    # 优先用户提供的 D:\OCR\tesseract.exe，否则 PATH
-    for cand in (r"D:\OCR\tesseract.exe", shutil.which("tesseract")):
-        if cand and Path(cand).exists():
-            return cand
+    # 候选：历史约定 D:\OCR、PATH、常见安装目录；**必须带 eng.traineddata 才算可用**
+    # （本机 D:\OCR 的 tessdata 只有 chi_sim，曾导致 OCR 静默全灭）
+    candidates = [
+        r"D:\OCR\tesseract.exe",
+        shutil.which("tesseract"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    ]
+    seen: set[str] = set()
+    for cand in candidates:
+        if cand and cand not in seen and Path(cand).exists():
+            seen.add(cand)
+            if _tessdata_ok(cand):
+                return cand
+    for cand in seen:  # 都不带 eng 数据时退而求其次，至少试跑
+        LOG.warning("tesseract %s 缺少 tessdata/eng.traineddata，OCR 可能失败", cand)
+        return cand
     return None
 
 
@@ -50,17 +73,25 @@ def _ocr_patch(roi_bgr: Any) -> int | None:
     if cmd is None:
         LOG.debug("tesseract 不可用，跳过 OCR")
         return None
-    tmp = Path(cv2.__file__).parent / "_digit_roi.png"
-    cv2.imwrite(str(tmp), bw)
+    # 临时文件必须放系统临时目录——写 cv2 安装目录在只读环境（赛方工控机）会静默失败
+    fd, tmp = tempfile.mkstemp(suffix="_digit_roi.png")
+    os.close(fd)
+    if not cv2.imwrite(tmp, bw):
+        LOG.warning("OCR 临时图写入失败：%s", tmp)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return None
     try:
         out = subprocess.run(
-            [cmd, str(tmp), "-", "--psm", "8", "-c", "tessedit_char_whitelist=0123456789"],
+            [cmd, tmp, "-", "--psm", "8", "-c", "tessedit_char_whitelist=0123456789"],
             capture_output=True, text=True, timeout=5,
         )
         txt = (out.stdout or "").strip()
     finally:
         try:
-            tmp.unlink()
+            os.unlink(tmp)
         except OSError:
             pass
     if not txt:

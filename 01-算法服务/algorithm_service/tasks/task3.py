@@ -30,6 +30,7 @@ LOG = logging.getLogger(__name__)
 class ShapeResult:
     placed: list[tuple[str, str]]     # [(block_id, shape_name)]
     skipped: list[tuple[str, str]]    # 未登记类别
+    failed: list[tuple[str, str]]     # 抓取/放置失败（7.7：不中止，继续剩余块）
 
 
 def run(
@@ -61,10 +62,14 @@ def run(
         poses = hand_pose_table(cfg)
         placed: list[tuple[str, str]] = []
         skipped: list[tuple[str, str]] = []
+        failed: list[tuple[str, str]] = []
         used_slots: dict[str, int] = {}
 
-        with hand.errors_watch():
+        with hand.errors_watch() as watcher:
             for blk in raw:
+                if watcher.first_error:
+                    # 8.4：手报错不停留在原地继续抓，直接中止（走外层撤回）
+                    raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
                 blk_id, shape, pick_pose = blk.block_id, blk.shape, blk.pick
                 slots = cfg.shapes.slots_for(shape)
                 if not slots:
@@ -79,10 +84,19 @@ def run(
                 try:
                     planner_pick(arm, hand, cfg, pick_pose, "grasp_shape", poses)
                     planner_place(arm, hand, cfg, target, poses, open_after=True)
-                    used_slots[shape] = used + 1
-                    placed.append((blk_id, shape))
-                except (ArmError, HandError) as e:
-                    raise PickError(f"处理 {blk_id}({shape}) 失败: {e}") from e
+                except (ArmError, HandError, PickError) as e:
+                    # 7.7：单块失败/掉落不中止，记录后继续分拣剩余块
+                    # （planner 已把 ArmError/HandError 包成 PickError，必须一并捕获）
+                    LOG.warning("块 %s(%s) 处理失败，继续剩余块: %s", blk_id, shape, e)
+                    failed.append((blk_id, shape))
+                    continue
+                used_slots[shape] = used + 1
+                placed.append((blk_id, shape))
+        if watcher.first_error:
+            raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
+
+        if not placed and failed:
+            raise PickError(f"全部 {len(failed)} 个几何体处理失败，请检查硬件后使用第 2 次机会")
     except Exception:
         retreat_best_effort(arm, cfg)
         raise
@@ -90,4 +104,6 @@ def run(
     safe_home(arm, cfg, vel=cfg.service.final_vel)
     if skipped:
         LOG.info("task3 skipped (unregistered shape or full slots): %s", skipped)
-    return ShapeResult(placed=placed, skipped=skipped)
+    if failed:
+        LOG.warning("task3 failed blocks (7.7 继续分拣后仍未完成): %s", failed)
+    return ShapeResult(placed=placed, skipped=skipped, failed=failed)

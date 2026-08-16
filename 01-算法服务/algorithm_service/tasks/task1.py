@@ -143,8 +143,11 @@ def run(
                 f"灯 {lamp.name} 指向的开关 {lamp.switch!r} 不在 panel.switches 里"
             )
         poses = hand_pose_table(cfg)
-        with hand.errors_watch():
+        with hand.errors_watch() as watcher:
             action = _actuate(arm, hand, cfg, sw, poses)
+        if watcher.first_error:
+            # 8.4：手报错立即中止（走外层撤回）
+            raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
         actions = [action]
     except Exception:
         retreat_best_effort(arm, cfg)

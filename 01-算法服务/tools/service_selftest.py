@@ -31,7 +31,6 @@ import logging
 import socket
 import sys
 import time
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,10 +49,11 @@ LOG = logging.getLogger("selftest")
 
 
 class MockArm:
-    """模拟右臂：所有 line_to 只记录坐标，不发 HTTP。"""
+    """模拟右臂：所有 line_to 只记录坐标，不发 HTTP；``fail_on`` 里的坐标抛 ArmError。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[float, float, float]] = []
+        self.fail_on: set[tuple[float, float, float]] = set()
         self._healthy = True
         self._enabled = False
 
@@ -69,6 +69,11 @@ class MockArm:
         return {"right": {"success": True, "message": "mock disabled"}}
 
     def line_to(self, x: float, y: float, z: float, *, vel: float = 0.12, **_: Any) -> dict[str, Any]:
+        from algorithm_service.hardware import ArmError
+
+        if any(abs(x - fx) < 1e-6 and abs(y - fy) < 1e-6 and abs(z - fz) < 1e-6
+               for fx, fy, fz in self.fail_on):
+            raise ArmError(f"mock 注入失败 @({x}, {y}, {z})")
         self.calls.append((x, y, z))
         return {"success": True, "message": "Cartesian execution finished for right_arm"}
 
@@ -79,10 +84,26 @@ class MockArm:
         )
 
 
+class _MockWatcher:
+    """模拟 errors_watch：__enter__ 时把 inject_error 灌进 first_error。"""
+
+    def __init__(self, hand: "MockHand") -> None:
+        self._hand = hand
+        self.first_error: list[int] | None = None
+
+    def __enter__(self) -> "_MockWatcher":
+        self.first_error = self._hand.inject_error
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
 class MockHand:
     def __init__(self) -> None:
         self.poses: list[str] = []
         self.errors_code = [0] * 10
+        self.inject_error: list[int] | None = None
 
     def set_pos(self, position: list[float]) -> dict[str, Any]:
         if len(position) != 10:
@@ -99,7 +120,7 @@ class MockHand:
         return list(self.errors_code)
 
     def errors_watch(self, interval_s: float = 0.2, on_error=None):
-        return nullcontext()  # mock：不起线程
+        return _MockWatcher(self)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +234,19 @@ def shapes_image() -> np.ndarray:
     return img
 
 
+def digits_image() -> np.ndarray:
+    """4 个带数字的白色长方块（task2 OCR 确定性输入，本机 tesseract 已验证）。"""
+
+    import cv2
+
+    img = np.zeros((600, 800, 3), dtype=np.uint8)
+    positions = [(150, 150), (400, 150), (150, 420), (400, 420)]
+    for i, (cx, cy) in enumerate(positions, start=1):
+        cv2.rectangle(img, (cx - 55, cy - 40), (cx + 55, cy + 40), (255, 255, 255), -1)
+        cv2.putText(img, str(i), (cx - 18, cy + 22), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 0, 0), 5)
+    return img
+
+
 # ---------------------------------------------------------------------------
 # 报告
 # ---------------------------------------------------------------------------
@@ -284,7 +318,7 @@ def build_app(cfg_raw: dict[str, Any], captured: dict[str, Any]):
     async def _t3(_: dict[str, Any]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         res = await loop.run_in_executor(None, task3.run, arm, hand, cfg, capture)
-        return {"placed": res.placed, "skipped": res.skipped}
+        return {"placed": res.placed, "skipped": res.skipped, "failed": res.failed}
 
     runner = TaskRunner(task1=_t1, task2=_t2, task3=_t3)
     app = app_factory(runner, ROOT / "config" / "site.yaml")
@@ -397,6 +431,18 @@ async def main_async(args: list[str]) -> int:
                extra=f"失败后撤回={'OK' if retreat2 else 'BAD'}")
         report.items[-1]["ok"] = report.items[-1]["ok"] and retreat2
 
+        # 5b. task2 四数字 → 严格按 1→2→3→4 全部入槽（正路径）
+        arm.calls.clear(); hand.poses.clear()
+        captured["color"] = digits_image()
+        res = await call("task2", "POST", "/api/task2/execute")
+        t2_ok = (
+            all(arm.visited(0.30 + 0.02 * i, -0.25, 0.45) for i in range(4))
+            and hand.poses.count("grasp_digit") == 4
+        )
+        expect("task2 四数字→按序入槽", res, success=True, msg_has="task2 ok",
+               extra=f"槽位/手型={'OK' if t2_ok else 'BAD'} msg={res['body'].get('message', '')}")
+        report.items[-1]["ok"] = report.items[-1]["ok"] and t2_ok
+
         # 6. task3 三形状 → 全部入槽
         arm.calls.clear(); hand.poses.clear()
         captured["color"] = shapes_image()
@@ -411,6 +457,29 @@ async def main_async(args: list[str]) -> int:
         expect("task3 三形状→入槽", res, success=True, msg_has="task3 ok",
                extra=f"槽位={'OK' if slots_ok else 'BAD'} msg={placed}")
         report.items[-1]["ok"] = report.items[-1]["ok"] and slots_ok
+
+        # 6b. task3 单块失败不中止（7.7）：square 槽位注入失败 → 其余两块照常入槽
+        arm.calls.clear(); hand.poses.clear()
+        arm.fail_on = {(0.34, -0.25, 0.45)}  # square_slot_1
+        captured["color"] = shapes_image()
+        res = await call("task3", "POST", "/api/task3/execute")
+        arm.fail_on = set()
+        msg6b = str(res["body"].get("message", ""))
+        partial_ok = (
+            arm.visited(0.30, -0.25, 0.45)      # round 照常
+            and arm.visited(0.38, -0.25, 0.45)  # irregular 照常
+            and '"failed"' in msg6b and "square" in msg6b
+        )
+        expect("task3 单块失败→继续", res, success=True, msg_has="task3 ok",
+               extra=f"部分完成={'OK' if partial_ok else 'BAD'} msg={msg6b}")
+        report.items[-1]["ok"] = report.items[-1]["ok"] and partial_ok
+
+        # 6c. 灵巧手错误码非 0 → 立即中止（8.4），不得假成功
+        hand.inject_error = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        captured["color"] = shapes_image()
+        res = await call("task3", "POST", "/api/task3/execute")
+        hand.inject_error = None
+        expect("task3 手错误→中止", res, success=False, msg_has="错误码")
 
         # 7. task3 空图 → 明确失败
         captured["color"] = blank_image()

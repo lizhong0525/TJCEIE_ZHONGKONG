@@ -90,6 +90,7 @@ panel:
 digit_blocks:
   expected_count: __现场标定后填入__        # 现场数
   placement_order_target: "ascending"        # ascending | descending
+  grasp_retries: 2                           # 单块抓起失败后的重试次数（6.7）
   staging_area:   {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}
   placement_area: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}
   slots:

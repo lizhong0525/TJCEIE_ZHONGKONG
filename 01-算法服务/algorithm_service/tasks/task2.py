@@ -71,12 +71,9 @@ def run(
         expected = _expected_count(cfg)
         raw = recognize_digits(color, depth, cfg)
         if (not raw) or (expected and len(raw) != expected):
-            # 一次重试
-            retry = recognize_digits(
-                (vision_capture() or {}).get("color"),
-                (vision_capture() or {}).get("depth"),
-                cfg,
-            )
+            # 一次重拍重识别（6.6：没把握就重拍，绝不能猜；彩色/深度必须同一帧）
+            frame2 = vision_capture() or {}
+            retry = recognize_digits(frame2.get("color"), frame2.get("depth"), cfg)
             if expected and len(retry) == expected:
                 raw = retry
             elif not raw:
@@ -101,16 +98,39 @@ def run(
             )
 
         poses = hand_pose_table(cfg)
+        retries = max(0, int(cfg.digit_blocks.grasp_retries))
         placed: list[DigitBlock] = []
-        with hand.errors_watch():
+        with hand.errors_watch() as watcher:
             for blk, slot in zip(raw_sorted, slots):
+                if watcher.first_error:
+                    # 8.4：手报错立即中止（走外层撤回）
+                    raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
+                target_slot = pose_from_vec3(slot.pos, f"槽位 {slot.name}")
+                # 抓起失败可重试 N 次（6.7）；放置失败不重试（块可能已在手/在槽，重来更危险）
+                last_err: Exception | None = None
+                for attempt in range(retries + 1):
+                    try:
+                        planner_pick(arm, hand, cfg, blk.pick, "grasp_digit", poses)
+                        last_err = None
+                        break
+                    except (ArmError, HandError, PickError) as e:
+                        # planner 已把 ArmError/HandError 包成 PickError，必须一并捕获
+                        last_err = e
+                        LOG.warning(
+                            "块 %s(数字 %d) 第 %d/%d 次抓取失败: %s",
+                            blk.block_id, blk.digit, attempt + 1, retries + 1, e,
+                        )
+                if last_err is not None:
+                    raise PickError(
+                        f"块 {blk.block_id}(数字 {blk.digit}) 抓取 {retries + 1} 次均失败: {last_err}"
+                    ) from last_err
                 try:
-                    planner_pick(arm, hand, cfg, blk.pick, "grasp_digit", poses)
-                    target_slot = pose_from_vec3(slot.pos, f"槽位 {slot.name}")
                     planner_place(arm, hand, cfg, target_slot, poses, open_after=True)
-                    placed.append(blk)
-                except (ArmError, HandError) as e:
-                    raise PickError(f"处理 {blk} 失败: {e}") from e
+                except (ArmError, HandError, PickError) as e:
+                    raise PickError(f"块 {blk.block_id}(数字 {blk.digit}) 放置失败: {e}") from e
+                placed.append(blk)
+        if watcher.first_error:
+            raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
     except Exception:
         retreat_best_effort(arm, cfg)
         raise

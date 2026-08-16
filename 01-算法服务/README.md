@@ -37,4 +37,13 @@ python tools/calibrate.py                   # 现场人工录入标定值
 - 附带修出被新自检照出的旧 bug：`task3.py` 把 `_Shape` dataclass 当 tuple 解包（`cannot unpack non-iterable`）。
 - 顺手同步：`calibrate.py` 面板段新 schema、`server.py` 成功 message 附带结果摘要（`lit_lamp`/`placed` 等，竞赛软件只看 success 不受影响）。
 
+第二轮修复（2026-08-16，自检扩到 13 项场景）：
+
+- **`errors_watch` 假监控**：后台线程抛 `HandError` 当场被线程边界吞掉，任务照常 success。改为只记录 `first_error` + 日志，三个 task 在每块前/后检查，命中即中止并撤回（8.4 真生效了）。
+- **每块开一条相机管线**：`_coords.pixel_to_base_pose` 原来每个块 `Vision()` 一次（`pipeline.start()` 且从不 close）。改为纯 numpy 数学解算，不碰 SDK。
+- **7.7/6.7 规则分**：task3 单块失败/掉落改为记录 `failed` 后继续分拣剩余（全灭才返回 false）；task2 抓起失败按 `grasp_retries`（默认 2，site.yaml 可配）重试，仍失败才返回 false。注意 planner 会把 ArmError 包成 PickError，捕获要带上。
+- **task2 重试采帧**：彩色/深度改为同一帧。
+- **OCR 两处雷**：临时 PNG 从 cv2 安装目录改到系统临时目录（工控机只读会静默全灭）；tesseract 候选 exe 必须带 `tessdata/eng.traineddata`（本机 `D:\OCR` 只有 chi_sim，曾导致识别全空）。
+- task3 全部分拣失败时返回 `success=false` 并提示用第 2 次机会；部分完成返回 true 且 message 列出 `failed`。
+
 详细"还剩啥"见 `../进度总览.md`。

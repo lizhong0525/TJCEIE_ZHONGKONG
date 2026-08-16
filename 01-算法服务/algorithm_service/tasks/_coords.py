@@ -38,7 +38,12 @@ def staging_pose(staging: Any, label: str) -> Pose:
 
 
 def pixel_to_base_pose(u: float, v: float, depth_m: float, cfg: Any) -> Pose:
-    """像素 + 深度 → 基座系坐标。内参/手眼未标定时抛 ``PickError``。"""
+    """像素 + 深度 → 基座系坐标。内参/手眼未标定时抛 ``PickError``。
+
+    **纯数学计算，不构造 ``Vision``**：``Vision()`` 会 ``pipeline.start()`` 打开
+    相机硬件流，历史上这里每解算一个块就新建一条管线且从不 close——真机上
+    必漏资源。坐标解算只需要内参 + 手眼矩阵，与采集完全无关。
+    """
 
     if is_placeholder(cfg.camera.fx) or is_placeholder(cfg.camera.fy):
         raise PickError("相机内参未标定（camera.fx/fy 仍是占位），无法解算基座坐标")
@@ -46,15 +51,17 @@ def pixel_to_base_pose(u: float, v: float, depth_m: float, cfg: Any) -> Pose:
     if not he or is_placeholder(he[0][0]):
         raise PickError("手眼矩阵未标定（hand_eye.rows 仍是占位），无法解算基座坐标")
 
-    from ..vision import Vision  # 局部导入，避免循环
+    import numpy as np
 
-    v = Vision(
-        intrinsics=(cfg.camera.fx, cfg.camera.fy, cfg.camera.cx, cfg.camera.cy),
-        distortion=(cfg.distortion.k1, cfg.distortion.k2, cfg.distortion.p1, cfg.distortion.p2),
-        hand_eye=cfg.hand_eye.matrix,
-    )
+    fx, fy = float(cfg.camera.fx), float(cfg.camera.fy)
+    cx0, cy0 = float(cfg.camera.cx), float(cfg.camera.cy)
+    x_c = (u - cx0) * depth_m / fx
+    y_c = (v - cy0) * depth_m / fy
+    z_c = depth_m
+    p_cam = np.array([x_c, y_c, z_c, 1.0], dtype=np.float64)
     try:
-        bx, by, bz = v.pixel_to_base(u, v, depth_m)
-    except Exception as e:  # noqa: BLE001
-        raise PickError(f"像素 ({u},{v}) 深度 {depth_m:.3f}m 手眼解算失败: {e}") from e
-    return Pose(bx, by, bz)
+        t = np.array(he, dtype=np.float64)
+    except (TypeError, ValueError) as e:
+        raise PickError(f"手眼矩阵含非数值项，无法解算基座坐标: {e}") from e
+    p_base = t @ p_cam
+    return Pose(float(p_base[0]), float(p_base[1]), float(p_base[2]))

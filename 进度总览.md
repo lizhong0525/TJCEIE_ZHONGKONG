@@ -27,6 +27,7 @@ TJCEIE_ZHONGKONG/（仓库根）
 - ③ **task1 重写为真实赛制**：`panel.photo_pose + lamps[](roi+switch) + switches[](kind+pos+act_dir+travel+standoff)` 新 schema；`detect_lit_lamp`（ROI 制，颜色比例+亮度兜底，多灯取最高）；真实点按/拨动序列（接近→tap/flick 手型→压入或拨动→撤离→张手→复位）。
 - ④ **拨杆内存状态机删除** → 无状态（规则 5.7），方向由 `act_dir` 配置固定；新增 `flick` 手型（site.yaml、poses.yaml、03 同步）。
 - 附带：修出被新自检照出的旧 bug（task3 把 `_Shape` dataclass 当 tuple 解包）；`calibrate.py` 面板段同步新 schema（冒烟验证过）；`server.py` 成功 message 带结果摘要（竞赛软件只看 success 不受影响）。
+- **第二轮（同日）**：① `errors_watch` 假监控修复（后台线程抛异常被吞 → 改为任务层检查 `first_error`，8.4 真生效）；② 坐标解算不再每块开相机管线（纯数学，不碰 SDK）；③ 7.7 task3 单块失败继续分拣 / 6.7 task2 抓起重试 N 次（`grasp_retries` 可配）；④ task2 重试同帧化、OCR 临时文件入 temp、tesseract 必须带 eng.traineddata（本机 D:\OCR 缺 eng 曾致全灭）。自检扩到 13 项场景全绿。
 **还剩啥**：`results/*.json → site.yaml` 映射接线（仓库明确警告：接线前视觉结果不得用于真机）；旧 `Vision`（眼在手外）换成 04 的眼在手上链；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。
 
 ## 02-机械臂

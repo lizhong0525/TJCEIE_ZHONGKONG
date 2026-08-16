@@ -139,6 +139,7 @@ class DigitBlocks:
 
     expected_count: int = 0
     placement_order_target: str = "ascending"  # ascending | descending
+    grasp_retries: int = 2                     # 单块抓起失败后的重试次数（6.7）
     staging_area: Vec3 = field(default_factory=Vec3)
     placement_area: Vec3 = field(default_factory=Vec3)
     slots: list[Slot] = field(default_factory=list)
@@ -435,6 +436,7 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
     digit_blocks = DigitBlocks(
         expected_count=_to_int(db_raw.get("expected_count"), 0),
         placement_order_target=_to_str(db_raw.get("placement_order_target"), "ascending"),
+        grasp_retries=_to_int(db_raw.get("grasp_retries"), 2),
         staging_area=_to_vec3(db_raw.get("staging_area")),
         placement_area=_to_vec3(db_raw.get("placement_area")),
         slots=_to_slots(db_raw.get("slots", [])),

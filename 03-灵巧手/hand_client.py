@@ -2,8 +2,14 @@
 
 * 默认右手 ``hand_type=right``。
 * 使用归一化 ``POST /api/set_pos``（10 维 [0,1]），避免极限值堵转。
-* 提供 ``errors_watch`` 上下文：每 200ms 拉一次 ``/api/errors``，任一非 0 立即
-  触发回调（默认抛 ``HandError``）。
+* 提供 ``errors_watch`` 上下文：后台线程每 200ms 拉一次 ``/api/errors``，任一非 0
+  时记录到 ``watcher.first_error`` 并记日志。**注意：异常在后台线程抛出没有意义**
+  （会被线程边界吞掉），使用方必须在 with 块内/后自己检查 ``first_error``::
+
+      with hand.errors_watch() as watcher:
+          ...
+      if watcher.first_error:
+          raise HandError(f"灵巧手错误码非 0: {watcher.first_error}")
 """
 from __future__ import annotations
 
@@ -102,7 +108,7 @@ class _ErrorWatcher:
     ) -> None:
         self._hand = hand
         self._interval = interval_s
-        self._cb = on_error or _raise_on_error
+        self._cb = on_error or _log_on_error
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.first_error: list[int] | None = None
@@ -135,5 +141,7 @@ class _ErrorWatcher:
             self._stop.wait(self._interval)
 
 
-def _raise_on_error(codes: list[int]) -> None:
-    raise HandError(f"灵巧手错误码非 0: {codes}")
+def _log_on_error(codes: list[int]) -> None:
+    # 后台线程里抛异常到不了主线程（上面的 except 会吞），只记录；
+    # 真正的中止靠使用方检查 watcher.first_error。
+    LOG.error("灵巧手错误码非 0: %s（调用方应检查 watcher.first_error 并中止任务）", codes)

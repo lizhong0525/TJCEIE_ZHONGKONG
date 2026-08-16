@@ -80,6 +80,6 @@ def classify_shapes(
         else:
             pick = staging_pose(staging, "shapes.staging_area")
         out.append(_Shape(block_id=f"shape_{i}", shape=shape, pick=pick))
-        if i >= 16:
+        if len(out) >= 16:
             break
     return out
