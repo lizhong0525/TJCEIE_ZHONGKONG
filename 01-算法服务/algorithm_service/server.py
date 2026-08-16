@@ -58,8 +58,10 @@ async def _read_json_or_empty(request: web.Request) -> dict[str, Any]:
 def app_factory(
     runner: TaskRunner,
     config_path: str | Path,
+    cfg: SiteConfig | None = None,
 ) -> web.Application:
-    cfg = load_cfg(config_path)
+    # 调用方已加载配置就直接用（run_app 传进来），别重复 load 两次
+    cfg = cfg if cfg is not None else load_cfg(config_path)
 
     @web.middleware
     async def error_middleware(request: web.Request, handler):
@@ -131,13 +133,15 @@ def default_runner(cfg: SiteConfig) -> TaskRunner:
     """构造生产用 TaskRunner；硬件/视觉未连接时 ``run`` 抛 ``camera not ready``。"""
 
     from .hardware import ArmClient, HandClient
-    from .vision import Vision
     from .tasks import task1, task2, task3
+    from .tasks._coords import xyzrpy_to_matrix
+    from .vision import Vision
 
     arm = ArmClient(
         host=cfg.service.arm_host,
         port=cfg.service.arm_port,
         side=cfg.service.arm_side,
+        default_rpy=cfg.service.default_rpy,
     )
     hand = HandClient(
         host=cfg.service.hand_host,
@@ -152,7 +156,19 @@ def default_runner(cfg: SiteConfig) -> TaskRunner:
 
     def capture() -> dict[str, Any]:
         f = vision.capture()
-        return {"color": f.color, "depth": f.depth}
+        frame: dict[str, Any] = {"color": f.color, "depth": f.depth}
+        # eye-in-hand：坐标解算链是 t_base_end @ t_end_camera，
+        # t_base_end 必须用拍照时刻的末端位姿（随臂动变化，不能写死）
+        try:
+            pose = (arm.pose() or {}).get("pose")
+        except Exception as e:  # noqa: BLE001
+            pose = None
+            LOG.warning("拍照时刻读 /api/pose 失败：%s（涉及深度解算时会报缺 t_base_end）", e)
+        if pose:
+            frame["t_base_end"] = xyzrpy_to_matrix(pose)
+        else:
+            LOG.warning("/api/pose 未就绪（TF 未起来或读取失败），本帧无 t_base_end")
+        return frame
 
     async def _run_task1(_: dict[str, Any]) -> dict[str, Any]:
         # 视觉与硬件是同步阻塞，放到默认 executor
@@ -185,6 +201,6 @@ def run_app(
     port: int = 5000,
 ) -> None:
     cfg = load_cfg(config_path)
-    app = app_factory(default_runner(cfg), config_path)
+    app = app_factory(default_runner(cfg), config_path, cfg)
     LOG.info("中控杯算法服务监听 http://%s:%d (config=%s)", host, port, config_path)
     web.run_app(app, host=host, port=port, access_log=None)

@@ -28,6 +28,8 @@
     task2 重拍选帧 3 种（恰够 expected 优先 / 更接近当选 / 打平保留首帧）、
     safe_home 2 种（半标定报轴名 / 全占位回退默认）、报错文案 2 种
     （重拍失败标注"已重拍一次" / 数量校验提示不写死块数）。
+15. 单元级（B3 手眼链落盘）：t_base_end @ t_end_camera 全链数学（_coords 与
+    Vision 两条路径）、缺 t_base_end 拒算，共 3 种。
 
 用法：``python -m tools.service_selftest``，失败 exit 1。
 """
@@ -365,7 +367,7 @@ def _unit_scenarios(report: Report) -> None:
     seq: list[int] = []
     calls = {"n": 0}
 
-    def fake_recognize(color: Any, depth: Any, cfg: Any) -> list[Any]:
+    def fake_recognize(color: Any, depth: Any, cfg: Any, t_base_end: Any = None) -> list[Any]:
         v = seq[min(calls["n"], len(seq) - 1)]
         calls["n"] += 1
         return fake_detected(v)
@@ -464,6 +466,46 @@ def _unit_scenarios(report: Report) -> None:
 
     scenario("safe_home 半标定→报轴名", s_partial_home)
     scenario("safe_home 全占位→回退默认", s_full_placeholder_home)
+
+    # 像素链（B3 防线）：t_base_end @ t_end_camera 全链数学 + 缺任一环拒算
+    from algorithm_service.tasks._coords import pixel_to_base_pose, xyzrpy_to_matrix
+    from algorithm_service.vision import Vision, VisionError
+
+    def s_chain() -> str:
+        cfg = from_dict(copy.deepcopy(MOCK_CFG_RAW))  # 内参 600/600/400/300，hand_eye=单位阵
+        t_be = xyzrpy_to_matrix({"x": 0.5, "y": 0.1, "z": 0.3, "roll": 0, "pitch": 0, "yaw": 0})
+        p = pixel_to_base_pose(400, 300, 1.0, cfg, t_be)  # 中心像素 → 相机正前方 1m
+        assert abs(p.x - 0.5) < 1e-9 and abs(p.y - 0.1) < 1e-9 and abs(p.z - 1.3) < 1e-9, p
+        return f"t_base_end 平移正确叠加 → ({p.x}, {p.y}, {p.z})"
+
+    def s_chain_missing() -> str:
+        cfg = from_dict(copy.deepcopy(MOCK_CFG_RAW))
+        try:
+            pixel_to_base_pose(400, 300, 1.0, cfg, None)
+        except PickError as e:
+            assert "t_base_end" in str(e), str(e)
+            return str(e)
+        raise AssertionError("缺 t_base_end 应拒算")
+
+    def s_chain_vision() -> str:
+        identity = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+        v = Vision(intrinsics=(600, 600, 400, 300), hand_eye=identity)
+        try:
+            try:
+                v.pixel_to_base(400, 300, 1.0)
+                raise AssertionError("Vision 缺 t_base_end 应拒算")
+            except VisionError as e:
+                assert "t_base_end" in str(e), str(e)
+            t_be = xyzrpy_to_matrix({"x": 0.5, "y": 0.1, "z": 0.3, "roll": 0, "pitch": 0, "yaw": 0})
+            x, y, z = v.pixel_to_base(400, 300, 1.0, t_be)
+            assert abs(x - 0.5) < 1e-9 and abs(y - 0.1) < 1e-9 and abs(z - 1.3) < 1e-9, (x, y, z)
+            return f"Vision.pixel_to_base 同链 → ({x:.3f}, {y:.3f}, {z:.3f})"
+        finally:
+            v.close()
+
+    scenario("像素链-t_base_end 合成", s_chain)
+    scenario("像素链-缺位姿拒算", s_chain_missing)
+    scenario("像素链-Vision 同款", s_chain_vision)
 
 
 # ---------------------------------------------------------------------------

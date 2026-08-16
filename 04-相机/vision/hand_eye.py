@@ -121,16 +121,19 @@ def solve_eye_in_hand(observations: list[BoardObservation]) -> dict[str, Any]:
         translations_target_to_camera,
         method=cv2.CALIB_HAND_EYE_PARK,
     )
-    t_end_camera = np.eye(4, dtype=np.float64)
-    t_end_camera[:3, :3] = r_camera_to_gripper
-    t_end_camera[:3, 3] = t_camera_to_gripper.reshape(3)
+    # t_end_from_camera：calibrateHandEye 解出的 camera→末端(gripper) 变换。
+    # 命名遵循全仓库 t_<目标坐标系>_<源坐标系> 约定（同 t_base_end）；
+    # 存进 results JSON 的 key 是 "t_end_camera"（04 工具链沿用该 key，勿改）。
+    t_end_from_camera = np.eye(4, dtype=np.float64)
+    t_end_from_camera[:3, :3] = r_camera_to_gripper
+    t_end_from_camera[:3, 3] = t_camera_to_gripper.reshape(3)
 
     target_in_base = []
     for item in observations:
         t_camera_target = np.eye(4, dtype=np.float64)
         t_camera_target[:3, :3] = item.r_target_to_camera
         t_camera_target[:3, 3] = item.t_target_to_camera
-        target_in_base.append(item.t_base_end @ t_end_camera @ t_camera_target)
+        target_in_base.append(item.t_base_end @ t_end_from_camera @ t_camera_target)
     translations = np.asarray([value[:3, 3] for value in target_in_base])
     translation_center = translations.mean(axis=0)
     translation_errors = np.linalg.norm(translations - translation_center, axis=1)
@@ -142,7 +145,7 @@ def solve_eye_in_hand(observations: list[BoardObservation]) -> dict[str, Any]:
     return {
         "transform_name": "T_end_camera",
         "meaning": "将彩色相机坐标中的点转换到机械臂末端坐标",
-        "t_end_camera": matrix_to_json(t_end_camera),
+        "t_end_camera": matrix_to_json(t_end_from_camera),
         "sample_count": len(observations),
         "quality": {
             "mean_reprojection_error_px": float(np.mean(reprojection)),

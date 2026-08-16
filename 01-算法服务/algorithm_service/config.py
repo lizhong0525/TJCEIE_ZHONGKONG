@@ -192,6 +192,8 @@ class ServiceConfig:
     final_vel: float = 0.05
     # 安全观察位（任务开始/结束/失败撤回都回这里）；缺省为中置观察位，现场可改
     safe_home: Vec3 = field(default_factory=lambda: Vec3(0.275, 0.0, 0.48))
+    # 运动默认末端姿态（已验证推荐姿态，平面向下）；赛题 1 立面面板/赛题 2 姿态分现场可能要调
+    default_rpy: tuple[float, float, float] = (-3.141, -1.552, 3.141)
 
 
 @dataclass
@@ -290,6 +292,23 @@ def _to_vec3(d: dict[str, Any] | None) -> Vec3:
         y=_to_float(d.get("y")),
         z=_to_float(d.get("z")),
     )
+
+
+def _to_rpy(v: Any) -> tuple[float, float, float]:
+    """解析 ``service.default_rpy``；占位/缺项/非数值一律回退已验证推荐姿态。"""
+
+    default = (-3.141, -1.552, 3.141)
+    if not isinstance(v, (list, tuple)) or len(v) != 3:
+        return default
+    out: list[float] = []
+    for item in v:
+        if is_placeholder(item):
+            return default
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            return default
+    return (out[0], out[1], out[2])
 
 
 def _to_matrix4(d: dict[str, Any] | None) -> list[list[Any]]:
@@ -401,6 +420,7 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
         safe_vel=_to_float(svc_raw.get("safe_vel"), 0.12),
         final_vel=_to_float(svc_raw.get("final_vel"), 0.05),
         safe_home=_to_vec3(svc_raw.get("safe_home")) if svc_raw.get("safe_home") else Vec3(0.275, 0.0, 0.48),
+        default_rpy=_to_rpy(svc_raw.get("default_rpy")),
     )
 
     cam_raw = raw.get("camera", {}) or {}

@@ -106,6 +106,7 @@ def recognize_digits(
     color_bgr: Any,
     depth_mm: Any | None,
     cfg: Any,
+    t_base_end: Any | None = None,
 ) -> list[_Detected]:
     import cv2  # type: ignore
     import numpy as np  # type: ignore
@@ -152,7 +153,7 @@ def recognize_digits(
         # 深度 → 基座坐标
         depth_val = center_depth_m(depth_mm, cx, cy)
         if depth_val is not None:
-            pick = pixel_to_base_pose(cx, cy, depth_val, cfg)
+            pick = pixel_to_base_pose(cx, cy, depth_val, cfg, t_base_end)
         elif depth_mm is not None:
             LOG.warning("块中心 (%d,%d) 深度无效，跳过该块（宁可漏识别也不用错坐标）", cx, cy)
             continue

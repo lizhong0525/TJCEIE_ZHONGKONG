@@ -31,7 +31,8 @@ TJCEIE_ZHONGKONG/（仓库根）
 - **第三轮（同日，外部审查报告 `代码审查-屎山排查.md`）**：A1 task3 全跳过也拒报 success（`if not placed: raise`）；A2 `Vision` 手眼占位不再静默退单位矩阵（`pixel_to_base` 抛错）；A3 `expected_count` 未标定拒动（数量校验不再失效）；A4 重拍报错数字以当选帧为准；B1 裸 `next()`、B2 手型裸 `float()` 修复；planner 消参数遮蔽/删死代码、`safe_home` 入配置、深度取样 5×5 中值。自检 15 项全绿。
 - **第四轮（同日，审查复审）**：task2 重拍选帧改"恰好够 expected 优先、其次更接近"（旧规则"取识别多的"会在首帧误检 5 个/重拍正确 4 个时丢掉正确结果）；`safe_home` 半标定不再静默回退内置默认位（只有三轴全占位才回退，部分填写报清缺哪根轴）；`expected_count` 未标定文案去掉写死的块数假设。
 - **第五轮（同日晚，`Bug检查报告-0816.md`）**：① BUG-1 06/04 的 OCR 管线读不出 3/4 → 对齐 01（subprocess 直连 tesseract、psm 8、2x 放大 + 阈值预处理、块面中心紧致裁剪），04 副本同步；② BUG-2 06 测试渲染参数坏（scale 8/t20 Hershey 大字不同 tesseract 版本读法不一）→ 改 01 selftest 同款渲染（黑底+白块+黑数字 1.8/5），06 合成 5/5 过；③ BUG-3/BUG-5 经复核第四轮已修，不重复动；④ BUG-4 mock 空 body 400 与真服务不一致 → 08 副本已对齐（空 body 按 `{}` 放行），task3 接口补实跑验证。第四轮的"专项 7 项"已落盘进 selftest（重拍选帧 3 + safe_home 2 + 文案 2），自检现为 22 项全绿。
-**还剩啥**：`results/*.json → site.yaml` 映射接线（仓库明确警告：接线前视觉结果不得用于真机）；旧 `Vision`（眼在手外）换成 04 的眼在手上链；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。
+- **第六轮（同日晚，清"本地能修"存量）**：① B3 手眼链统一——site.yaml `hand_eye` 语义定为 **T_end_camera**（04 结果原样填入），`pixel_to_base`/`pixel_to_base_pose` 改为 `t_base_end @ t_end_camera` 全链，`t_base_end` 由 `capture()` 拍照时刻自动读 `/api/pose`（缺任一环拒算不猜坐标），selftest 3 个像素链场景锁数学；② B5 收尾——`default_rpy` 入 site.yaml（ArmClient 实例默认姿态，02 副本同步）；③ B7——删掉 `01/config/hand/poses.yaml` 与 `03/poses.yaml` 两份死副本，手型唯一来源 = site.yaml；④ B11 打包——server 双重 `load_cfg` 消除、`3.14159`→`math.pi`、04 `t_end_camera` 局部变量改名 `t_end_from_camera`（JSON key 不变）、`check_camera` 的 `args.save` 副作用改局部变量、`solve_hand_eye` 质量门禁接上 rotation spread（≤2°，合成数据验证过：小角度样本求解误差 0.09 会被门禁拦下，大角度样本还原误差 3.8e-10）。自检 25 项全绿。
+**还剩啥**：`results/*.json → site.yaml` 映射接线（手眼链代码第六轮已统一为 `t_base_end @ t_end_camera`，04 的 `t_end_camera` 原样填进 site.yaml 即可；接线前视觉结果不得用于真机）；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。
 
 ## 02-机械臂
 
@@ -41,7 +42,7 @@ TJCEIE_ZHONGKONG/（仓库根）
 
 ## 03-灵巧手
 
-**做了啥**：`hand_client.py`（同源副本）、`hand_bringup.py`（status→errors→**0/1 方向验证**，文档 §3.1 与 §4.6 矛盾，必须人眼确认一次）、`poses.yaml` 手型库模板、离线测试。
+**做了啥**：`hand_client.py`（同源副本）、`hand_bringup.py`（status→errors→**0/1 方向验证**，文档 §3.1 与 §4.6 矛盾，必须人眼确认一次）、离线测试。手型唯一来源 = 01 的 site.yaml（原 poses.yaml 副本已删）。
 **审查结论**：离线测试 9/9 过（set_pos 校验、pose_name、errors_watch 堵转触发）。
 **还剩啥**：全部要真机——方向验证、5 个手型（open/close/grasp_digit/grasp_shape/tap）标定、`set_pvc` 限流抓取调参、抓取确认（电流判据）实测。
 

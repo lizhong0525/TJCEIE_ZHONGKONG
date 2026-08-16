@@ -5,7 +5,9 @@
 - `hand_client.py` — 灵巧手 HTTP 客户端（与 `../01-算法服务/algorithm_service/hardware/hand.py` 同源副本，此处用于独立调试）
 - `hand_bringup.py` — 开机自检 + **0/1 方向验证**（任务清单 3.3：文档 §3.1 与 §4.6 互相矛盾，必须真机确认一次）
 - `test_hand_client_offline.py` — 离线测试（stdlib 假 O10 服务）
-- `poses.yaml` — 手型库模板（5 个姿态全是默认值，**还没标定**）
+
+手型数据的**唯一来源**是 `../01-算法服务/config/site.yaml` 的 `hand.poses`（原 `poses.yaml`
+副本已删，消灭三处同步靠自觉的问题）；bringup 标定结论直接往那里写。
 
 ## 用法
 

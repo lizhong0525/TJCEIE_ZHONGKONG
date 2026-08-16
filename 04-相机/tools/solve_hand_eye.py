@@ -24,11 +24,13 @@ def main() -> int:
     passed = (
         quality["max_reprojection_error_px"] <= float(limits["maximum_reprojection_error_px"])
         and quality["max_target_translation_spread_m"] <= float(limits["maximum_translation_spread_m"])
+        and quality["max_target_rotation_spread_deg"] <= float(limits.get("maximum_rotation_spread_deg", 2.0))
     )
     result["quality_gate_passed"] = passed
     result["quality_limits"] = {
         "maximum_reprojection_error_px": limits["maximum_reprojection_error_px"],
         "maximum_translation_spread_m": limits["maximum_translation_spread_m"],
+        "maximum_rotation_spread_deg": limits.get("maximum_rotation_spread_deg", 2.0),
     }
     output = resolve_project_path(limits["hand_eye_result"])
     save_json(output, result)

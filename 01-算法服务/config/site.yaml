@@ -13,6 +13,8 @@ service:
   safe_vel: 0.12
   final_vel: 0.05
   safe_home: {x: 0.275, y: 0.0, z: 0.48}   # 安全观察位：任务开始/结束/失败撤回都回这里，现场可改
+  default_rpy: [-3.141, -1.552, 3.141]     # 运动默认末端姿态（已验证推荐姿态，平面向下）
+                                           # 赛题 1 立面面板/赛题 2 姿态分现场可能要调
 
 # --- 相机 ---
 camera:                 # Gemini335 内参
@@ -27,11 +29,10 @@ distortion:             # 径向 + 切向
   p1: 0.0
   p2: 0.0
 
-# --- 手眼（基座←相机 完整链）4x4 ---
-# ⚠ 接线必读：这里要填的是 t_base_end(拍照时刻末端位姿) @ t_end_camera(标定结果)。
-# 04-相机 的 solve_hand_eye 只输出 t_end_camera（相机→末端），不能直接抄进来！
-# eye-in-hand 下该矩阵随臂动变化：拍照位不固定时，每次解算都要用当时的
-# GET /api/pose 重算 t_base_end（真机接线时再封这个链）。
+# --- 手眼（T_end_camera：相机→末端）4x4 ---
+# 直接填 04-相机 results/hand_eye.json 里的 t_end_camera 原值，不需要再乘任何链。
+# 完整链 t_base_end @ t_end_camera 中的 t_base_end 由服务在每次拍照时自动
+# 读 GET /api/pose 补上（eye-in-hand 随臂动变化，不能写死进配置）。
 hand_eye:
   rows:
     - [__现场标定后填入__, __现场标定后填入__, __现场标定后填入__, __现场标定后填入__]

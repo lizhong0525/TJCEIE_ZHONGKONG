@@ -17,7 +17,7 @@ import requests
 
 LOG = logging.getLogger(__name__)
 
-DEFAULT_RPY = (-3.141, -1.552, 3.141)  # 已验证推荐姿态
+DEFAULT_RPY = (-3.141, -1.552, 3.141)  # 已验证推荐姿态；只作兜底，生产值走 cfg.service.default_rpy
 
 
 class ArmError(RuntimeError):
@@ -32,12 +32,14 @@ class ArmClient:
         side: str = "right",
         timeout: float = 90.0,
         session: requests.Session | None = None,
+        default_rpy: tuple[float, float, float] = DEFAULT_RPY,
     ) -> None:
         if side not in ("right", "left"):
             raise ValueError(f"side must be right/left, got {side!r}")
         self.base = f"http://{host}:{port}"
         self.side = side
         self.timeout = timeout
+        self.default_rpy = tuple(float(v) for v in default_rpy)
         self._s = session or requests.Session()
 
     # ---- 查询 -------------------------------------------------------------
@@ -114,10 +116,11 @@ class ArmClient:
         y: float,
         z: float,
         *,
-        rpy: tuple[float, float, float] = DEFAULT_RPY,
+        rpy: tuple[float, float, float] | None = None,
         vel: float = 0.12,
         plan_only: bool = False,
     ) -> dict[str, Any]:
+        rpy = self.default_rpy if rpy is None else rpy
         body = {
             "mode": f"{self.side}_arm",
             self.side: {
@@ -145,9 +148,10 @@ class ArmClient:
         y: float,
         z: float,
         *,
-        rpy: tuple[float, float, float] = DEFAULT_RPY,
+        rpy: tuple[float, float, float] | None = None,
         vel: float = 0.12,
     ) -> dict[str, Any]:
+        rpy = self.default_rpy if rpy is None else rpy
         body = {
             "mode": f"{self.side}_arm",
             self.side: {

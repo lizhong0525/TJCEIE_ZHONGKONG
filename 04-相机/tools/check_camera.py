@@ -23,6 +23,7 @@ def main() -> int:
     config = load_config()
     output = Path(__file__).resolve().parents[1] / "output"
     output.mkdir(exist_ok=True)
+    save_pending = args.save  # --save 只存第一帧；用局部变量，不改 argparse 对象
     with Gemini335Camera(config) as camera:
         print(json.dumps(camera_summary(camera), ensure_ascii=False, indent=2))
         print("窗口中绿色十字为中心深度；按S保存，按Q或ESC退出。")
@@ -40,11 +41,11 @@ def main() -> int:
             cv2.putText(view, text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             cv2.imshow("Gemini335 | S=save Q=quit", view)
             key = cv2.waitKey(1) & 0xFF
-            if args.save or key in (ord("s"), ord("S")):
+            if save_pending or key in (ord("s"), ord("S")):
                 cv2.imwrite(str(output / "color.png"), frame.color_bgr)
                 cv2.imwrite(str(output / "depth_mm.png"), np.clip(frame.depth_mm, 0, 65535).astype(np.uint16))
                 print(f"已保存到：{output}")
-                args.save = False
+                save_pending = False  # --save 只存第一帧，不持续覆盖
             if key in (ord("q"), ord("Q"), 27):
                 break
     cv2.destroyAllWindows()

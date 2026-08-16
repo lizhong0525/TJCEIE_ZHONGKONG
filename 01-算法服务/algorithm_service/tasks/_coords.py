@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from ..config import is_placeholder
@@ -38,6 +39,30 @@ def center_depth_m(depth_mm: Any, u: int, v: int) -> float | None:
     return float(np.median(valid)) / 1000.0
 
 
+def xyzrpy_to_matrix(pose: Any) -> list[list[float]]:
+    """``{x,y,z,roll,pitch,yaw}`` → 4×4 齐次矩阵（XYZ 固定轴，等价 Rz(yaw)@Ry(pitch)@Rx(roll)）。
+
+    与 04-相机 ``vision/geometry.py`` 的 ``pose_xyzrpy_to_matrix`` 同一约定，
+    用来把 ``GET /api/pose`` 的响应转成 ``t_base_end``。
+    """
+
+    import numpy as np
+
+    x, y, z, roll, pitch, yaw = (
+        float(pose[k]) for k in ("x", "y", "z", "roll", "pitch", "yaw")
+    )
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=np.float64)
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=np.float64)
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=np.float64)
+    t = np.eye(4, dtype=np.float64)
+    t[:3, :3] = rz @ ry @ rx
+    t[:3, 3] = [x, y, z]
+    return t.tolist()
+
+
 def staging_pose(staging: Any, label: str) -> Pose:
     """无深度图时的兜底坐标：staging 区域中心必须已标定，否则抛清晰 ``PickError``。"""
 
@@ -47,19 +72,35 @@ def staging_pose(staging: Any, label: str) -> Pose:
         raise PickError(f"{e}（当前无可用深度图，视觉只能回退到该区域中心）") from e
 
 
-def pixel_to_base_pose(u: float, v: float, depth_m: float, cfg: Any) -> Pose:
-    """像素 + 深度 → 基座系坐标。内参/手眼未标定时抛 ``PickError``。
+def pixel_to_base_pose(
+    u: float,
+    v: float,
+    depth_m: float,
+    cfg: Any,
+    t_base_end: Any | None = None,
+) -> Pose:
+    """像素 + 深度 → 基座系坐标。任一环节未标定都抛 ``PickError``。
+
+    手眼链（eye-in-hand，与 04-相机 完全一致的约定）：
+    ``p_base = t_base_end(拍照时刻末端位姿) @ t_end_camera(site.yaml hand_eye) @ p_cam``
+
+    * site.yaml 的 ``hand_eye`` **直接填** 04 ``results/hand_eye.json`` 的
+      ``t_end_camera``，不需要再乘任何链；
+    * ``t_base_end`` 由调用方在拍照时刻读 ``GET /api/pose`` 取得——随臂动变化，
+      不能写死进配置；缺了它宁可报错也不猜坐标。
 
     **纯数学计算，不构造 ``Vision``**：``Vision()`` 会 ``pipeline.start()`` 打开
     相机硬件流，历史上这里每解算一个块就新建一条管线且从不 close——真机上
-    必漏资源。坐标解算只需要内参 + 手眼矩阵，与采集完全无关。
+    必漏资源。坐标解算只需要内参 + 手眼链，与采集完全无关。
     """
 
     if is_placeholder(cfg.camera.fx) or is_placeholder(cfg.camera.fy):
         raise PickError("相机内参未标定（camera.fx/fy 仍是占位），无法解算基座坐标")
     he = cfg.hand_eye.matrix
     if not he or is_placeholder(he[0][0]):
-        raise PickError("手眼矩阵未标定（hand_eye.rows 仍是占位），无法解算基座坐标")
+        raise PickError("手眼矩阵未标定（hand_eye.rows 仍是占位，应填 04 输出的 t_end_camera），无法解算基座坐标")
+    if t_base_end is None:
+        raise PickError("缺拍照时刻末端位姿 t_base_end（eye-in-hand 链需要拍照时读 /api/pose），拒绝猜坐标")
 
     import numpy as np
 
@@ -67,11 +108,11 @@ def pixel_to_base_pose(u: float, v: float, depth_m: float, cfg: Any) -> Pose:
     cx0, cy0 = float(cfg.camera.cx), float(cfg.camera.cy)
     x_c = (u - cx0) * depth_m / fx
     y_c = (v - cy0) * depth_m / fy
-    z_c = depth_m
-    p_cam = np.array([x_c, y_c, z_c, 1.0], dtype=np.float64)
+    p_cam = np.array([x_c, y_c, depth_m, 1.0], dtype=np.float64)
     try:
-        t = np.array(he, dtype=np.float64)
+        t_end_camera = np.array(he, dtype=np.float64)
+        t_be = np.array(t_base_end, dtype=np.float64)
     except (TypeError, ValueError) as e:
-        raise PickError(f"手眼矩阵含非数值项，无法解算基座坐标: {e}") from e
-    p_base = t @ p_cam
+        raise PickError(f"手眼链含非数值项，无法解算基座坐标: {e}") from e
+    p_base = t_be @ t_end_camera @ p_cam
     return Pose(float(p_base[0]), float(p_base[1]), float(p_base[2]))

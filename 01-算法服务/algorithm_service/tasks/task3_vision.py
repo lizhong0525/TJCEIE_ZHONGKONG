@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,7 @@ def classify_shapes(
     color_bgr: Any,
     depth_mm: Any | None,
     cfg: Any,
+    t_base_end: Any | None = None,
 ) -> list[_Shape]:
     import cv2  # type: ignore
     import numpy as np  # type: ignore
@@ -56,7 +58,7 @@ def classify_shapes(
         perim = cv2.arcLength(cnt, True)
         if perim <= 0:
             continue
-        circ = 4 * 3.14159 * area / (perim * perim)
+        circ = 4 * math.pi * area / (perim * perim)
         rect = cv2.minAreaRect(cnt)
         bw_, bh_ = rect[1]
         if min(bw_, bh_) < 25:
@@ -73,7 +75,7 @@ def classify_shapes(
         cx, cy = int(rect[0][0]), int(rect[0][1])
         depth_val = center_depth_m(depth_mm, cx, cy)
         if depth_val is not None:
-            pick = pixel_to_base_pose(cx, cy, depth_val, cfg)
+            pick = pixel_to_base_pose(cx, cy, depth_val, cfg, t_base_end)
         elif depth_mm is not None:
             LOG.warning("形状块中心 (%d,%d) 深度无效，跳过该块（宁可漏识别也不用错坐标）", cx, cy)
             continue

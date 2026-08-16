@@ -18,6 +18,7 @@
     "minimum_hand_eye_samples": 12,
     "maximum_reprojection_error_px": 1.0,
     "maximum_translation_spread_m": 0.005,
+    "maximum_rotation_spread_deg": 2.0,
     "hand_eye_result": "results/hand_eye.json",
     "intrinsics_result": "results/intrinsics.json"
   },

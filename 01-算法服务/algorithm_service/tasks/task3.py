@@ -55,7 +55,7 @@ def run(
         if color is None:
             raise PickError("camera not ready")
 
-        raw = classify_shapes(color, depth, cfg)
+        raw = classify_shapes(color, depth, cfg, frame.get("t_base_end"))
         if not raw:
             raise PickError("shape recognition failed: got 0")
 

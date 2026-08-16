@@ -87,8 +87,8 @@ def main() -> int:
         step("方向验证", False, f"回答矛盾（全1是张手?{ans1} / 全0是握拳?{ans2}），请检查设备后重跑")
 
     print(f"\n结论：OPEN_VALUE={open_v}  CLOSE_VALUE={close_v}")
-    print("请把该结论写进 01-算法服务/config/site.yaml 的 hand.poses 及本目录 poses.yaml 注释，")
-    print("并据此标定 grasp_digit / grasp_shape / tap 等手型。")
+    print("请把该结论写进 01-算法服务/config/site.yaml 的 hand.poses（手型唯一来源，")
+    print("本目录不再另存副本），并据此标定 grasp_digit / grasp_shape / tap 等手型。")
     return 0
 
 

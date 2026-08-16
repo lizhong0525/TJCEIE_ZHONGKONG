@@ -57,9 +57,14 @@ python tools/calibrate.py                   # 现场人工录入标定值
 - 暂不动（已记录待办）：01↔04 手眼链统一（真机接线时做）、05/06/07 与 04 的整文件副本（模块工作台定位，正式服务以 01 为准）、`str(e)` 透传、`D:\OCR` 候选（已加 eng 校验）、04 内部命名。
 
 第四轮修复（2026-08-16，外部审查复审意见）：
-
 - **task2 重拍选帧"更多≠更对"**：旧规则 `len(retry) > len(raw)` 会在"第一次误检 5 个、重拍正确 4 个"时丢掉正确结果。改为：恰好识别够 `expected` 的优先，都没有就选数量更接近 `expected` 的；打平保留首帧。报错数字以当选帧为准。
 - **`safe_home` 半标定静默回退**：只填了部分轴时原会被当成"未配置"静默换成内置默认位（半标定坐标和默认位可能差很远）。改为只有三轴全占位才回退；部分填写抛 `PickError` 并报清是哪根轴未标定。
 - **task2 报错文案去写死数量**：`expected_count` 本身可配，未标定时的提示不再写"固定 4 块"，改为"请按赛题实际块数配置"。
+
+第五/六轮修复（2026-08-16 晚，详见 `../进度总览.md`）：
+
+- **第五轮**：selftest 落盘单元场景（重拍选帧 3 + safe_home 2 + 文案 2），配套修了 06/04 的 OCR 管线与 08 mock 空 body（BUG-1/2/4）。
+- **第六轮（B3 手眼链统一）**：site.yaml `hand_eye` 语义定为 **T_end_camera**（04 `results/hand_eye.json` 原样填入）；`pixel_to_base`/`_coords.pixel_to_base_pose` 走 `t_base_end @ t_end_camera` 全链，`t_base_end` 由 `capture()` 拍照时刻自动读 `/api/pose`（缺任一环拒算，绝不猜坐标）；`service.default_rpy` 入配置（B5 收尾）；`config/hand/poses.yaml` 死副本删除（手型唯一来源 = site.yaml，B7）；server 双重 `load_cfg` 消除。
+- 自检现为 **25 项**（15 HTTP 场景 + 10 单元场景）全绿。
 
 详细"还剩啥"见 `../进度总览.md`。

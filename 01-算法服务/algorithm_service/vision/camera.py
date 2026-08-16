@@ -3,8 +3,9 @@
 * 优先用 ``pyorbbecsdk`` 官方 Python 绑定（彩色 + 深度 + 内参）。
 * 未安装 SDK 时：``capture()`` 抛 ``VisionError``；调用方应在赛题层转换为
   ``{"success": false, "message": "camera not ready"}``。
-* 提供 ``pixel_to_base``：像素+深度 → 相机坐标 → ``hand_eye``（基座←相机完整链）→ 基座系 (m)。
-  矩阵非法（占位/未标定）时 ``pixel_to_base`` 抛 ``VisionError``，绝不静默用单位矩阵。
+* 提供 ``pixel_to_base``：像素+深度 → 相机坐标 →
+  ``t_base_end(拍照时刻) @ t_end_camera(hand_eye)`` → 基座系 (m)。
+  矩阵非法（占位/未标定）或缺 ``t_base_end`` 时抛 ``VisionError``，绝不静默猜坐标。
 
 设计为**单例**容器 ``Vision``，由应用层在启动时实例化一次。
 """
@@ -175,14 +176,20 @@ class Vision:
 
     # ---- 手眼变换 ---------------------------------------------------------
 
-    def pixel_to_base(self, u: float, v: float, depth_m: float) -> tuple[float, float, float]:
+    def pixel_to_base(
+        self,
+        u: float,
+        v: float,
+        depth_m: float,
+        t_base_end: Any | None = None,
+    ) -> tuple[float, float, float]:
         """像素 (u, v) + 深度 (m) → 基座系 (x, y, z) (m)。
 
-        手眼矩阵约定（接线时必读）：``hand_eye`` 必须是**基座←相机**的完整链
-        ``t_base_end(拍照时刻末端位姿) @ t_end_camera(标定结果)``。eye-in-hand 下
-        该矩阵随臂动变化——拍照位不固定时，每次解算都要用当时的 ``GET /api/pose``
-        重算 ``t_base_end``。04 的 ``solve_hand_eye`` 输出的只是 ``t_end_camera``，
-        **不能直接填进 site.yaml**。
+        手眼链（eye-in-hand，与 04-相机 一致）：
+        ``p_base = t_base_end(拍照时刻末端位姿) @ t_end_camera(self.hand_eye) @ p_cam``。
+        ``hand_eye`` 填 04 ``solve_hand_eye`` 输出的 ``t_end_camera`` 原值即可；
+        ``t_base_end`` 每次解算都要用拍照时刻的 ``GET /api/pose`` 重算（随臂动变化）。
+        缺任一环直接抛 ``VisionError``，绝不静默用单位矩阵或猜坐标。
         """
 
         fx, fy, cx, cy = self.intrinsics
@@ -190,9 +197,14 @@ class Vision:
             raise VisionError("相机内参未标定（fx/fy=0）")
         if self.hand_eye is None:
             raise VisionError("手眼矩阵未标定（hand_eye 是占位/非数值），拒绝解算坐标")
+        if t_base_end is None:
+            raise VisionError("缺拍照时刻末端位姿 t_base_end（eye-in-hand 链需要 /api/pose），拒绝解算坐标")
         x_c = (u - cx) * depth_m / fx
         y_c = (v - cy) * depth_m / fy
-        z_c = depth_m
-        p_cam = np.array([x_c, y_c, z_c, 1.0], dtype=np.float64)
-        p_base = self.hand_eye @ p_cam
+        p_cam = np.array([x_c, y_c, depth_m, 1.0], dtype=np.float64)
+        try:
+            t_be = np.array(t_base_end, dtype=np.float64)
+        except (TypeError, ValueError) as e:
+            raise VisionError(f"t_base_end 含非数值项，拒绝解算坐标: {e}") from e
+        p_base = t_be @ self.hand_eye @ p_cam
         return float(p_base[0]), float(p_base[1]), float(p_base[2])

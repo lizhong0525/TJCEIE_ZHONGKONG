@@ -76,11 +76,11 @@ def run(
             raise PickError(
                 "digit_blocks.expected_count 未标定或 <= 0（数量校验必须生效，请按赛题实际块数配置）"
             )
-        raw = recognize_digits(color, depth, cfg)
+        raw = recognize_digits(color, depth, cfg, frame.get("t_base_end"))
         if (not raw) or len(raw) != expected:
             # 一次重拍重识别（6.6：没把握就重拍，绝不能猜；彩色/深度必须同一帧）
             frame2 = vision_capture() or {}
-            retry = recognize_digits(frame2.get("color"), frame2.get("depth"), cfg)
+            retry = recognize_digits(frame2.get("color"), frame2.get("depth"), cfg, frame2.get("t_base_end"))
             # 挑更可信的一次：恰好识别够 expected 的优先，都没有就选数量更接近 expected 的
             # （"更多"≠"更对"：第一次误检 5 个、重拍正确 4 个时不能选错的）
             if len(retry) == expected:
