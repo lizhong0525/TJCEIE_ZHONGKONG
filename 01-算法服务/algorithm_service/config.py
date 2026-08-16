@@ -190,6 +190,8 @@ class ServiceConfig:
     hand_type: str = "right"
     safe_vel: float = 0.12
     final_vel: float = 0.05
+    # 安全观察位（任务开始/结束/失败撤回都回这里）；缺省为中置观察位，现场可改
+    safe_home: Vec3 = field(default_factory=lambda: Vec3(0.275, 0.0, 0.48))
 
 
 @dataclass
@@ -262,6 +264,23 @@ def _to_str(v: Any, default: str = "") -> str:
     if v is None:
         return default
     return str(v)
+
+
+def _to_pose_list(v: Any, default: list[float]) -> list[float]:
+    """手型数组解析：占位/非数值项按 0.0 兜底并告警，绝不让启动崩在裸 float() 上。"""
+
+    if not isinstance(v, list):
+        return list(default)
+    out: list[float] = []
+    for x in v:
+        try:
+            out.append(float(x))
+        except (TypeError, ValueError):
+            LOG.warning("手型含不可解析项 %r，按 0.0 兜底", x)
+            out.append(0.0)
+    while len(out) < 10:
+        out.append(0.0)
+    return out[:10]
 
 
 def _to_vec3(d: dict[str, Any] | None) -> Vec3:
@@ -381,6 +400,7 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
         hand_type=_to_str(svc_raw.get("hand_type"), "right"),
         safe_vel=_to_float(svc_raw.get("safe_vel"), 0.12),
         final_vel=_to_float(svc_raw.get("final_vel"), 0.05),
+        safe_home=_to_vec3(svc_raw.get("safe_home")) if svc_raw.get("safe_home") else Vec3(0.275, 0.0, 0.48),
     )
 
     cam_raw = raw.get("camera", {}) or {}
@@ -417,12 +437,12 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
     hand_raw = raw.get("hand", {}) or {}
     poses_raw = hand_raw.get("poses", {}) or {}
     hand = HandPoseSet(
-        open=[float(x) for x in poses_raw.get("open", [1.0] * 10)],
-        close=[float(x) for x in poses_raw.get("close", [0.0] * 10)],
-        grasp_digit=[float(x) for x in poses_raw.get("grasp_digit", [0.0] * 10)],
-        grasp_shape=[float(x) for x in poses_raw.get("grasp_shape", [0.0] * 10)],
-        tap=[float(x) for x in poses_raw.get("tap", [0.0] * 10)],
-        flick=[float(x) for x in poses_raw.get("flick", [0.0] * 10)],
+        open=_to_pose_list(poses_raw.get("open"), [1.0] * 10),
+        close=_to_pose_list(poses_raw.get("close"), [0.0] * 10),
+        grasp_digit=_to_pose_list(poses_raw.get("grasp_digit"), [0.0] * 10),
+        grasp_shape=_to_pose_list(poses_raw.get("grasp_shape"), [0.0] * 10),
+        tap=_to_pose_list(poses_raw.get("tap"), [0.0] * 10),
+        flick=_to_pose_list(poses_raw.get("flick"), [0.0] * 10),
     )
 
     panel_raw = raw.get("panel", {}) or {}

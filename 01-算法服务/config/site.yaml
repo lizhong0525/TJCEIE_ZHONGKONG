@@ -12,6 +12,7 @@ service:
   hand_type: "right"
   safe_vel: 0.12
   final_vel: 0.05
+  safe_home: {x: 0.275, y: 0.0, z: 0.48}   # 安全观察位：任务开始/结束/失败撤回都回这里，现场可改
 
 # --- 相机 ---
 camera:                 # Gemini335 内参
@@ -26,7 +27,11 @@ distortion:             # 径向 + 切向
   p1: 0.0
   p2: 0.0
 
-# --- 手眼（基座→相机）4x4 ---
+# --- 手眼（基座←相机 完整链）4x4 ---
+# ⚠ 接线必读：这里要填的是 t_base_end(拍照时刻末端位姿) @ t_end_camera(标定结果)。
+# 04-相机 的 solve_hand_eye 只输出 t_end_camera（相机→末端），不能直接抄进来！
+# eye-in-hand 下该矩阵随臂动变化：拍照位不固定时，每次解算都要用当时的
+# GET /api/pose 重算 t_base_end（真机接线时再封这个链）。
 hand_eye:
   rows:
     - [__现场标定后填入__, __现场标定后填入__, __现场标定后填入__, __现场标定后填入__]

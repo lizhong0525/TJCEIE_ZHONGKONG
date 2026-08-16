@@ -95,8 +95,13 @@ def run(
         if watcher.first_error:
             raise PickError(f"灵巧手错误码非 0: {watcher.first_error}（按 8.4 停手撤臂）")
 
-        if not placed and failed:
-            raise PickError(f"全部 {len(failed)} 个几何体处理失败，请检查硬件后使用第 2 次机会")
+        if not placed:
+            # A 级防线：全跳过（形状名与 shapes.kinds 对不上）或全失败都不得报 success——
+            # 竞赛软件只看 success，一个没放绝不能返回 true
+            raise PickError(
+                f"一个几何体都没放入槽（识别 {len(raw)} 个：跳过 {len(skipped)}、失败 {len(failed)}）。"
+                f"全跳过多半是识别类别名与 site.yaml 的 shapes.kinds 名称对不上；全失败请检查硬件"
+            )
     except Exception:
         retreat_best_effort(arm, cfg)
         raise

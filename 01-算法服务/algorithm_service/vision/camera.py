@@ -3,7 +3,8 @@
 * 优先用 ``pyorbbecsdk`` 官方 Python 绑定（彩色 + 深度 + 内参）。
 * 未安装 SDK 时：``capture()`` 抛 ``VisionError``；调用方应在赛题层转换为
   ``{"success": false, "message": "camera not ready"}``。
-* 提供 ``pixel_to_base``：去畸变 → 相机坐标 → ``T_base_camera`` → 基座系 (m)。
+* 提供 ``pixel_to_base``：像素+深度 → 相机坐标 → ``hand_eye``（基座←相机完整链）→ 基座系 (m)。
+  矩阵非法（占位/未标定）时 ``pixel_to_base`` 抛 ``VisionError``，绝不静默用单位矩阵。
 
 设计为**单例**容器 ``Vision``，由应用层在启动时实例化一次。
 """
@@ -49,10 +50,13 @@ class Vision:
     ) -> None:
         self.intrinsics = self._to_float_tuple(intrinsics, length=4)
         self.distortion = self._to_float_tuple(distortion, length=4)
+        # 手眼矩阵非法（占位/非数值）时**不**退回单位矩阵——静默用错坐标比报错危险得多。
+        # 用 None 显式标记"未标定"：capture 照常可用，pixel_to_base 直接拒绝。
         try:
-            self.hand_eye = np.array(hand_eye, dtype=np.float64) if hand_eye else np.eye(4)
+            self.hand_eye = np.array(hand_eye, dtype=np.float64) if hand_eye else None
         except (TypeError, ValueError):
-            self.hand_eye = np.eye(4)
+            LOG.warning("hand_eye 含占位/非数值项，坐标解算功能不可用（capture 不受影响）")
+            self.hand_eye = None
         self._max_fail = max_consecutive_failures
         self._consecutive_failures = 0
         self.health_ready = True
@@ -172,11 +176,20 @@ class Vision:
     # ---- 手眼变换 ---------------------------------------------------------
 
     def pixel_to_base(self, u: float, v: float, depth_m: float) -> tuple[float, float, float]:
-        """像素 (u, v) + 深度 (m) → 基座系 (x, y, z) (m)。"""
+        """像素 (u, v) + 深度 (m) → 基座系 (x, y, z) (m)。
+
+        手眼矩阵约定（接线时必读）：``hand_eye`` 必须是**基座←相机**的完整链
+        ``t_base_end(拍照时刻末端位姿) @ t_end_camera(标定结果)``。eye-in-hand 下
+        该矩阵随臂动变化——拍照位不固定时，每次解算都要用当时的 ``GET /api/pose``
+        重算 ``t_base_end``。04 的 ``solve_hand_eye`` 输出的只是 ``t_end_camera``，
+        **不能直接填进 site.yaml**。
+        """
 
         fx, fy, cx, cy = self.intrinsics
         if fx <= 0 or fy <= 0:
             raise VisionError("相机内参未标定（fx/fy=0）")
+        if self.hand_eye is None:
+            raise VisionError("手眼矩阵未标定（hand_eye 是占位/非数值），拒绝解算坐标")
         x_c = (u - cx) * depth_m / fx
         y_c = (v - cy) * depth_m / fy
         z_c = depth_m

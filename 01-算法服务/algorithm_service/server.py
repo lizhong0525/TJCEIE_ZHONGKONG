@@ -133,7 +133,6 @@ def default_runner(cfg: SiteConfig) -> TaskRunner:
     from .hardware import ArmClient, HandClient
     from .vision import Vision
     from .tasks import task1, task2, task3
-    from .planner import hand_pose_table
 
     arm = ArmClient(
         host=cfg.service.arm_host,
@@ -176,9 +175,6 @@ def default_runner(cfg: SiteConfig) -> TaskRunner:
             None, task3.run, arm, hand, cfg, capture,
         )
         return {"placed": result.placed, "skipped": result.skipped, "failed": result.failed}
-
-    # 避免 lint 警告 hand_pose_table 未用；如需在 task 内切换姿态可在这里 import
-    _ = hand_pose_table
 
     return TaskRunner(task1=_run_task1, task2=_run_task2, task3=_run_task3)
 

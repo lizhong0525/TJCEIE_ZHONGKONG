@@ -28,6 +28,8 @@ TJCEIE_ZHONGKONG/（仓库根）
 - ④ **拨杆内存状态机删除** → 无状态（规则 5.7），方向由 `act_dir` 配置固定；新增 `flick` 手型（site.yaml、poses.yaml、03 同步）。
 - 附带：修出被新自检照出的旧 bug（task3 把 `_Shape` dataclass 当 tuple 解包）；`calibrate.py` 面板段同步新 schema（冒烟验证过）；`server.py` 成功 message 带结果摘要（竞赛软件只看 success 不受影响）。
 - **第二轮（同日）**：① `errors_watch` 假监控修复（后台线程抛异常被吞 → 改为任务层检查 `first_error`，8.4 真生效）；② 坐标解算不再每块开相机管线（纯数学，不碰 SDK）；③ 7.7 task3 单块失败继续分拣 / 6.7 task2 抓起重试 N 次（`grasp_retries` 可配）；④ task2 重试同帧化、OCR 临时文件入 temp、tesseract 必须带 eng.traineddata（本机 D:\OCR 缺 eng 曾致全灭）。自检扩到 13 项场景全绿。
+- **第三轮（同日，外部审查报告 `代码审查-屎山排查.md`）**：A1 task3 全跳过也拒报 success（`if not placed: raise`）；A2 `Vision` 手眼占位不再静默退单位矩阵（`pixel_to_base` 抛错）；A3 `expected_count` 未标定拒动（数量校验不再失效）；A4 重拍报错数字以当选帧为准；B1 裸 `next()`、B2 手型裸 `float()` 修复；planner 消参数遮蔽/删死代码、`safe_home` 入配置、深度取样 5×5 中值。自检 15 项全绿。
+- **第四轮（同日，审查复审）**：task2 重拍选帧改"恰好够 expected 优先、其次更接近"（旧规则"取识别多的"会在首帧误检 5 个/重拍正确 4 个时丢掉正确结果）；`safe_home` 半标定不再静默回退内置默认位（只有三轴全占位才回退，部分填写报清缺哪根轴）；`expected_count` 未标定文案去掉写死的块数假设。自检 15 项 + 专项 7 项全绿，02/03/05/06/07 回归不受影响。
 **还剩啥**：`results/*.json → site.yaml` 映射接线（仓库明确警告：接线前视觉结果不得用于真机）；旧 `Vision`（眼在手外）换成 04 的眼在手上链；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。
 
 ## 02-机械臂

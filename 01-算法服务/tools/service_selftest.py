@@ -13,13 +13,17 @@
 1. ``GET /api/health`` → success=true。
 2. task1 亮红灯 → success=true，且走了 push 序列（接近点/压入点坐标断言）。
 3. task1 亮绿灯 → success=true，且走了 toggle 序列（接触点/拨动终点断言）。
-4. task1 无灯亮 → success=false，message 含"未检测到亮灯"。
-5. task2 空图 → success=false，message 含"digit recognition failed"。
-6. task3 三种形状合成图 → success=true，placed=3，臂到过 3 个槽位。
-7. task3 空图 → success=false，message 含"shape recognition failed"。
-8. 全占位配置（未标定）：task1 → "panel.lamps 未配置"；task3 → "未标定"
-   （且绝不是裸 ValueError 的 "could not convert"）。
-9. 并发互斥：执行中再发同题 → 第二个拿到 busy。
+4. task1 无灯亮 → success=false，message 含"未检测到亮灯"，且失败后撤回安全位。
+5. task2 空图 → success=false，message 含"digit recognition failed"，且失败后撤回。
+6. task2 四数字合成图 → success=true，严格按 1→2→3→4 全入槽（真实 OCR 正路径）。
+7. task3 三种形状合成图 → success=true，placed=3，臂到过 3 个槽位。
+8. task3 单块放置失败 → success=true 且 failed 列出该块（7.7 继续分拣）。
+9. task3 灵巧手错误码非 0 → success=false，message 含"错误码"（8.4）。
+10. task3 空图 → success=false，message 含"shape recognition failed"。
+11. task3 形状名与 kinds 对不上 → 全跳过也 success=false（A1 防线）。
+12. 全占位配置（未标定）：task1 → "panel.lamps 未配置"；task2 → "expected_count 未标定"
+    （A3 防线，数量校验不得失效）；task3 → "未标定"（且绝不是裸 ValueError）。
+13. 并发互斥：执行中再发同题 → 第二个拿到 busy。
 
 用法：``python -m tools.service_selftest``，失败 exit 1。
 """
@@ -368,13 +372,14 @@ async def main_async(args: list[str]) -> int:
                         "exception": str(e)}
 
         def expect(name: str, res: dict[str, Any], *, success: bool,
-                   msg_has: str = "", extra: str = "") -> None:
+                   msg_has: str = "", extra_ok: bool = True, extra: str = "") -> None:
             body = res["body"]
             ok = (
                 res["ok_http"]
                 and isinstance(body, dict)
                 and body.get("success") is success
                 and (not msg_has or msg_has in str(body.get("message", "")))
+                and extra_ok
             )
             detail = json.dumps(body, ensure_ascii=False)
             if extra:
@@ -395,9 +400,8 @@ async def main_async(args: list[str]) -> int:
             and arm.visited(SW_RED["x"], SW_RED["y"] - 0.005, SW_RED["z"])  # 压入点
             and "tap" in hand.poses and hand.poses[-1] == "open"
         )
-        expect("task1 红灯→push", res, success=True, msg_has="task1 ok",
+        expect("task1 红灯→push", res, success=True, msg_has="task1 ok", extra_ok=push_ok,
                extra=f"动作链={'OK' if push_ok else 'BAD'} calls={arm.calls} poses={hand.poses}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and push_ok
 
         # 3. task1 亮绿灯 → toggle 序列
         arm.calls.clear(); hand.poses.clear()
@@ -409,9 +413,8 @@ async def main_async(args: list[str]) -> int:
             and arm.visited(SW_TOGGLE["x"], SW_TOGGLE["y"], SW_TOGGLE["z"] - 0.02)  # 拨动终点
             and "flick" in hand.poses and hand.poses[-1] == "open"
         )
-        expect("task1 绿灯→toggle", res, success=True, msg_has="task1 ok",
+        expect("task1 绿灯→toggle", res, success=True, msg_has="task1 ok", extra_ok=toggle_ok,
                extra=f"动作链={'OK' if toggle_ok else 'BAD'} calls={arm.calls} poses={hand.poses}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and toggle_ok
 
         # 4. task1 无灯亮 → 明确失败，且失败后撤回了安全位（清单 5.8/8.6）
         arm.calls.clear(); hand.poses.clear()
@@ -419,8 +422,7 @@ async def main_async(args: list[str]) -> int:
         res = await call("task1", "POST", "/api/task1/execute")
         retreat1 = arm.calls and arm.calls[-1] == (0.275, 0.0, 0.48)
         expect("task1 无灯→失败", res, success=False, msg_has="未检测到亮灯",
-               extra=f"失败后撤回={'OK' if retreat1 else 'BAD'}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and bool(retreat1)
+               extra_ok=bool(retreat1), extra=f"失败后撤回={'OK' if retreat1 else 'BAD'}")
 
         # 5. task2 空图 → 明确失败（旧假绿灯场景），且失败后撤回了安全位
         arm.calls.clear(); hand.poses.clear()
@@ -428,8 +430,7 @@ async def main_async(args: list[str]) -> int:
         res = await call("task2", "POST", "/api/task2/execute")
         retreat2 = arm.calls.count((0.275, 0.0, 0.48)) >= 2  # 开场一次 + 失败撤回一次
         expect("task2 空图→失败", res, success=False, msg_has="digit recognition failed",
-               extra=f"失败后撤回={'OK' if retreat2 else 'BAD'}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and retreat2
+               extra_ok=retreat2, extra=f"失败后撤回={'OK' if retreat2 else 'BAD'}")
 
         # 5b. task2 四数字 → 严格按 1→2→3→4 全部入槽（正路径）
         arm.calls.clear(); hand.poses.clear()
@@ -439,9 +440,8 @@ async def main_async(args: list[str]) -> int:
             all(arm.visited(0.30 + 0.02 * i, -0.25, 0.45) for i in range(4))
             and hand.poses.count("grasp_digit") == 4
         )
-        expect("task2 四数字→按序入槽", res, success=True, msg_has="task2 ok",
+        expect("task2 四数字→按序入槽", res, success=True, msg_has="task2 ok", extra_ok=t2_ok,
                extra=f"槽位/手型={'OK' if t2_ok else 'BAD'} msg={res['body'].get('message', '')}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and t2_ok
 
         # 6. task3 三形状 → 全部入槽
         arm.calls.clear(); hand.poses.clear()
@@ -454,9 +454,8 @@ async def main_async(args: list[str]) -> int:
             and arm.visited(0.38, -0.25, 0.45)  # irregular_slot_1
             and hand.poses.count("grasp_shape") == 3
         )
-        expect("task3 三形状→入槽", res, success=True, msg_has="task3 ok",
+        expect("task3 三形状→入槽", res, success=True, msg_has="task3 ok", extra_ok=slots_ok,
                extra=f"槽位={'OK' if slots_ok else 'BAD'} msg={placed}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and slots_ok
 
         # 6b. task3 单块失败不中止（7.7）：square 槽位注入失败 → 其余两块照常入槽
         arm.calls.clear(); hand.poses.clear()
@@ -470,9 +469,8 @@ async def main_async(args: list[str]) -> int:
             and arm.visited(0.38, -0.25, 0.45)  # irregular 照常
             and '"failed"' in msg6b and "square" in msg6b
         )
-        expect("task3 单块失败→继续", res, success=True, msg_has="task3 ok",
+        expect("task3 单块失败→继续", res, success=True, msg_has="task3 ok", extra_ok=partial_ok,
                extra=f"部分完成={'OK' if partial_ok else 'BAD'} msg={msg6b}")
-        report.items[-1]["ok"] = report.items[-1]["ok"] and partial_ok
 
         # 6c. 灵巧手错误码非 0 → 立即中止（8.4），不得假成功
         hand.inject_error = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -488,6 +486,24 @@ async def main_async(args: list[str]) -> int:
 
     await runner_http.cleanup()
 
+    # 7b. task3 形状名与 kinds 对不上 → 全跳过也必须 success=false（A1 防线）
+    import copy
+
+    cfg_no_kinds = copy.deepcopy(MOCK_CFG_RAW)
+    cfg_no_kinds["shapes"]["kinds"] = []
+    captured3: dict[str, Any] = {"color": shapes_image(), "depth": None}
+    app3, _, _ = build_app(cfg_no_kinds, captured3)
+    runner3b, port3b = await _start(app3)
+    base3b = f"http://127.0.0.1:{port3b}"
+    async with aiohttp.ClientSession() as sess3b:
+        t0 = time.perf_counter()
+        async with sess3b.post(f"{base3b}/api/task3/execute", json={}, timeout=aiohttp.ClientTimeout(total=30)) as r:
+            body_sk = await r.json()
+        ok_sk = body_sk.get("success") is False and "都没放入槽" in str(body_sk.get("message", ""))
+        report.add("task3 全跳过→失败(A1)", ok_sk, (time.perf_counter() - t0) * 1000,
+                   json.dumps(body_sk, ensure_ascii=False))
+    await runner3b.cleanup()
+
     # 8. 全占位配置：必须清晰报"未标定/未配置"，绝不裸抛 ValueError
     captured2: dict[str, Any] = {"color": shapes_image(), "depth": None}
     app2, _, _ = build_app({}, captured2)
@@ -501,6 +517,16 @@ async def main_async(args: list[str]) -> int:
         report.add("占位配置 task1→拒动", ok1, (time.perf_counter() - t0) * 1000,
                    json.dumps(body1, ensure_ascii=False))
 
+        # A3 防线：expected_count 占位 → 数量校验不得失效（块识别得出也拒动）
+        captured2["color"] = digits_image()
+        t0 = time.perf_counter()
+        async with sess2.post(f"{base2}/api/task2/execute", json={}, timeout=aiohttp.ClientTimeout(total=30)) as r:
+            body2 = await r.json()
+        ok2 = body2.get("success") is False and "expected_count" in str(body2.get("message", ""))
+        report.add("占位配置 task2→数量校验(A3)", ok2, (time.perf_counter() - t0) * 1000,
+                   json.dumps(body2, ensure_ascii=False))
+
+        captured2["color"] = shapes_image()
         t0 = time.perf_counter()
         async with sess2.post(f"{base2}/api/task3/execute", json={}, timeout=aiohttp.ClientTimeout(total=30)) as r:
             body3 = await r.json()

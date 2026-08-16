@@ -46,4 +46,20 @@ python tools/calibrate.py                   # 现场人工录入标定值
 - **OCR 两处雷**：临时 PNG 从 cv2 安装目录改到系统临时目录（工控机只读会静默全灭）；tesseract 候选 exe 必须带 `tessdata/eng.traineddata`（本机 `D:\OCR` 只有 chi_sim，曾导致识别全空）。
 - task3 全部分拣失败时返回 `success=false` 并提示用第 2 次机会；部分完成返回 true 且 message 列出 `failed`。
 
+第三轮修复（2026-08-16，来自外部代码审查报告 `代码审查-屎山排查.md`，自检扩到 15 项场景）：
+
+- **A1 task3 全跳过也报 success**：只拦了"全失败"没拦"全跳过"（形状名与 `shapes.kinds` 对不上时一块不放也 true）→ 改为 `if not placed: raise`，附诊断提示。
+- **A2 Vision 手眼占位静默退单位矩阵**：构造时矩阵非法 → `hand_eye=None`（capture 不受影响），`pixel_to_base` 直接抛 `VisionError`。docstring 写明接线约定：`t_base_end(拍照时刻) @ t_end_camera(标定输出)`，04 的求解结果不能直接填。
+- **A3 task2 数量校验失效**：`expected_count` 占位转 0 后长度永不校验（识别 3 个也照放）→ 未标定直接拒动。
+- **A4 task2 重拍报错数字用旧值**：报 "got 0" 实为 3 → 以两次识别中更可信的一次为准（选取规则见第四轮）。
+- **B1** task1 裸 `next()` → 默认 None + 人话 PickError；**B2** 手型解析裸 `float()` → `_to_pose_list` 逐项兜底。
+- 屎山清理：planner 参数 `hand_pose_table` 遮蔽同名函数 → `pose_table`；删 `look_at`/`approach` 死代码；`SAFE_HOME` 移入 `service.safe_home`（site.yaml 可改）；删 server 里 `_ = hand_pose_table` 消 lint 写法；深度取样从单像素改 5×5 中值（与 04 对齐）；selftest 的 `report.items[-1]` 事后篡改改为 `extra_ok` 参数。
+- 暂不动（已记录待办）：01↔04 手眼链统一（真机接线时做）、05/06/07 与 04 的整文件副本（模块工作台定位，正式服务以 01 为准）、`str(e)` 透传、`D:\OCR` 候选（已加 eng 校验）、04 内部命名。
+
+第四轮修复（2026-08-16，外部审查复审意见）：
+
+- **task2 重拍选帧"更多≠更对"**：旧规则 `len(retry) > len(raw)` 会在"第一次误检 5 个、重拍正确 4 个"时丢掉正确结果。改为：恰好识别够 `expected` 的优先，都没有就选数量更接近 `expected` 的；打平保留首帧。报错数字以当选帧为准。
+- **`safe_home` 半标定静默回退**：只填了部分轴时原会被当成"未配置"静默换成内置默认位（半标定坐标和默认位可能差很远）。改为只有三轴全占位才回退；部分填写抛 `PickError` 并报清是哪根轴未标定。
+- **task2 报错文案去写死数量**：`expected_count` 本身可配，未标定时的提示不再写"固定 4 块"，改为"请按赛题实际块数配置"。
+
 详细"还剩啥"见 `../进度总览.md`。

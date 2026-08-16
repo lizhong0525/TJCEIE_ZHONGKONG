@@ -1,4 +1,4 @@
-"""高层动作库：``safe_home`` / ``approach`` / ``pick`` / ``place`` / ``look_at``。
+"""高层动作库：``safe_home`` / ``retreat_best_effort`` / ``pick`` / ``place``。
 
 * 不依赖硬件是否连接：所有硬件方法走 ``ArmClient`` / ``HandClient`` 异常向上抛。
 * 安全区校验：所有末端目标先过 ``SiteConfig.safe_box``。
@@ -64,9 +64,16 @@ def pose_from_vec3(v: Vec3, label: str) -> Pose:
 
 
 def safe_home(arm: ArmClient, cfg: SiteConfig, vel: float | None = None) -> None:
-    """机械臂回到安全观察位。"""
+    """机械臂回到安全观察位（``cfg.service.safe_home``，可在 site.yaml 改）。"""
 
-    target = SAFE_HOME
+    v = cfg.service.safe_home
+    if all(is_placeholder(getattr(v, axis)) for axis in ("x", "y", "z")):
+        # 三轴全占位 = 完全没标定，只有这种情况才允许用内置默认位兜底
+        LOG.warning("service.safe_home 未配置，用内置默认 %s", SAFE_HOME)
+        target = SAFE_HOME
+    else:
+        # 只填了部分轴：半标定坐标和默认位可能差很远，必须报清哪根轴，不能静默换
+        target = pose_from_vec3(v, "service.safe_home")
     if is_placeholder(cfg.safe_box.x_min):
         LOG.warning("safe_box 未标定，跳过越界校验，回到 safe_home=%s", target)
     else:
@@ -83,32 +90,13 @@ def retreat_best_effort(arm: ArmClient, cfg: SiteConfig) -> None:
         LOG.warning("失败后撤回安全位未成功：%s", e)
 
 
-def look_at(arm: ArmClient, cfg: SiteConfig, target: Pose) -> None:
-    """移动到目标上方的观察位（z 抬到 target.z + 0.10 m，仅参考）。"""
-
-    above = Pose(target.x, target.y, target.z + 0.10)
-    if is_placeholder(cfg.safe_box.x_min):
-        LOG.warning("safe_box 未标定，look_at 跳过越界校验 -> %s", above)
-    else:
-        ensure_safe(cfg, above, "look_at")
-    arm.line_to(above.x, above.y, above.z, vel=cfg.service.safe_vel)
-
-
-def approach(arm: ArmClient, cfg: SiteConfig, target: Pose) -> None:
-    """从上方下降到目标正上方 0.02 m。"""
-
-    above = Pose(target.x, target.y, target.z + 0.02)
-    ensure_safe(cfg, above, "approach")
-    arm.line_to(above.x, above.y, above.z, vel=cfg.service.safe_vel)
-
-
 def pick(
     arm: ArmClient,
     hand: HandClient,
     cfg: SiteConfig,
     target: Pose,
     hand_pose: str,
-    hand_pose_table: dict[str, list[float]],
+    pose_table: dict[str, list[float]],
 ) -> None:
     """标准抓取：open → above → pick → 抓取姿态 → above。"""
 
@@ -124,10 +112,10 @@ def pick(
     ensure_safe(cfg, target, "pick.target")
 
     try:
-        hand.pose_name("open", hand_pose_table)
+        hand.pose_name("open", pose_table)
         arm.line_to(above.x, above.y, above.z, vel=cfg.service.safe_vel)
         arm.line_to(target.x, target.y, target.z, vel=cfg.service.final_vel)
-        hand.pose_name(hand_pose, hand_pose_table)
+        hand.pose_name(hand_pose, pose_table)
         arm.line_to(above.x, above.y, above.z, vel=cfg.service.final_vel)
     except (ArmError, HandError) as e:
         raise PickError(f"pick 失败: {e}") from e
@@ -138,7 +126,7 @@ def place(
     hand: HandClient,
     cfg: SiteConfig,
     slot: Pose,
-    hand_pose_table: dict[str, list[float]],
+    pose_table: dict[str, list[float]],
     *, open_after: bool = True,
 ) -> None:
     """放置：above → slot → open → above。"""
@@ -156,7 +144,7 @@ def place(
         arm.line_to(above.x, above.y, above.z, vel=cfg.service.safe_vel)
         arm.line_to(slot.x, slot.y, slot.z, vel=cfg.service.final_vel)
         if open_after:
-            hand.pose_name("open", hand_pose_table)
+            hand.pose_name("open", pose_table)
         arm.line_to(above.x, above.y, above.z, vel=cfg.service.final_vel)
     except (ArmError, HandError) as e:
         raise PickError(f"place 失败: {e}") from e

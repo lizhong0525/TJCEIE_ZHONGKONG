@@ -17,15 +17,25 @@ LOG = logging.getLogger(__name__)
 
 
 def center_depth_m(depth_mm: Any, u: int, v: int) -> float | None:
-    """取深度图 ``(u, v)`` 处的深度（米）；无深度图/越界/无效值返回 ``None``。"""
+    """取深度图 ``(u, v)`` 附近 5×5 窗口的有效深度中值（米）。
+
+    单像素深度容易踩到空洞/飞点，与 04-相机 的取法对齐；无有效值返回 ``None``。
+    """
 
     if depth_mm is None:
         return None
-    if 0 <= v < depth_mm.shape[0] and 0 <= u < depth_mm.shape[1]:
-        d = int(depth_mm[v, u])
-        if 100 < d < 5000:
-            return d / 1000.0
-    return None
+    import numpy as np
+
+    h, w = depth_mm.shape[:2]
+    x0, x1 = max(0, u - 2), min(w, u + 3)
+    y0, y1 = max(0, v - 2), min(h, v + 3)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    patch = depth_mm[y0:y1, x0:x1].astype(np.float64)
+    valid = patch[(patch > 100) & (patch < 5000)]
+    if valid.size == 0:
+        return None
+    return float(np.median(valid)) / 1000.0
 
 
 def staging_pose(staging: Any, label: str) -> Pose:

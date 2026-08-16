@@ -134,7 +134,10 @@ def run(
         if lamp_name is None:
             raise PickError("未检测到亮灯（所有灯 ROI 均未超阈值）")
         LOG.info("task1 亮灯 = %s", lamp_name)
-        lamp = next(l for l in cfg.panel.lamps if l.name == lamp_name)
+        lamp = next((l for l in cfg.panel.lamps if l.name == lamp_name), None)
+        if lamp is None:
+            # 正常不会发生（检测只返回配置里的灯名），但报错必须是人话
+            raise PickError(f"亮灯 {lamp_name!r} 不在 panel.lamps 配置里")
 
         # 4. 查开关并执行
         sw = next((s for s in cfg.panel.switches if s.name == lamp.switch), None)
