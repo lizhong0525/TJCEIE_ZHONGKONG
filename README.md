@@ -13,7 +13,9 @@ TJCEIE_ZHONGKONG/（仓库根）
 ├── 05-赛题1-按钮开关/   亮灯识别模块 + 规则判分动作序列 + 合成测试
 ├── 06-赛题2-长方体转运/ 数字识别模块 + 规则判分动作序列 + 合成测试
 ├── 07-赛题3-几何体分拣/ 形状分类模块 + 规则判分动作序列 + 合成测试
-└── 08-联调测试/        官方 mock + 对接验收步骤
+├── 08-联调测试/        官方 mock + 对接验收步骤
+├── 09-现场部署/        离线 wheel 包 + 现场安装.bat（工控机无外网）
+└── 现场调试清单.md      标定日 11 步照做清单（优先级 赛题2 > 赛题1 > 赛题3）
 ```
 
 ---
@@ -32,7 +34,8 @@ TJCEIE_ZHONGKONG/（仓库根）
 - **第四轮（同日，审查复审）**：task2 重拍选帧改"恰好够 expected 优先、其次更接近"（旧规则"取识别多的"会在首帧误检 5 个/重拍正确 4 个时丢掉正确结果）；`safe_home` 半标定不再静默回退内置默认位（只有三轴全占位才回退，部分填写报清缺哪根轴）；`expected_count` 未标定文案去掉写死的块数假设。
 - **第五轮（同日晚，`Bug检查报告-0816.md`）**：① BUG-1 06/04 的 OCR 管线读不出 3/4 → 对齐 01（subprocess 直连 tesseract、psm 8、2x 放大 + 阈值预处理、块面中心紧致裁剪），04 副本同步；② BUG-2 06 测试渲染参数坏（scale 8/t20 Hershey 大字不同 tesseract 版本读法不一）→ 改 01 selftest 同款渲染（黑底+白块+黑数字 1.8/5），06 合成 5/5 过；③ BUG-3/BUG-5 经复核第四轮已修，不重复动；④ BUG-4 mock 空 body 400 与真服务不一致 → 08 副本已对齐（空 body 按 `{}` 放行），task3 接口补实跑验证。第四轮的"专项 7 项"已落盘进 selftest（重拍选帧 3 + safe_home 2 + 文案 2），自检现为 22 项全绿。
 - **第六轮（同日晚，清"本地能修"存量）**：① B3 手眼链统一——site.yaml `hand_eye` 语义定为 **T_end_camera**（04 结果原样填入），`pixel_to_base`/`pixel_to_base_pose` 改为 `t_base_end @ t_end_camera` 全链，`t_base_end` 由 `capture()` 拍照时刻自动读 `/api/pose`（缺任一环拒算不猜坐标），selftest 3 个像素链场景锁数学；② B5 收尾——`default_rpy` 入 site.yaml（ArmClient 实例默认姿态，02 副本同步）；③ B7——删掉 `01/config/hand/poses.yaml` 与 `03/poses.yaml` 两份死副本，手型唯一来源 = site.yaml；④ B11 打包——server 双重 `load_cfg` 消除、`3.14159`→`math.pi`、04 `t_end_camera` 局部变量改名 `t_end_from_camera`（JSON key 不变）、`check_camera` 的 `args.save` 副作用改局部变量、`solve_hand_eye` 质量门禁接上 rotation spread（≤2°，合成数据验证过：小角度样本求解误差 0.09 会被门禁拦下，大角度样本还原误差 3.8e-10）。自检 25 项全绿。
-**还剩啥**：`results/*.json → site.yaml` 映射接线（手眼链代码第六轮已统一为 `t_base_end @ t_end_camera`，04 的 `t_end_camera` 原样填进 site.yaml 即可；接线前视觉结果不得用于真机）；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。
+- **第七轮（同日晚，对照 team01/team02 工程对比的增量）**：① 结构化 JSONL 请求日志——每次任务落一行到 `logs/YYYYMMDD.jsonl`（time/task/path/success/elapsed_ms/result_message），写失败只告警不影响任务；② `GET /api/config/summary` 调试端点——臂/手连接信息 + 内参是否标定 + **未标定清单** + dryRun 回显；③ `service.dry_run` 开关——true 时服务假跑（接口 success 不动硬件），启动大红字警告（team02 忘关 dry_run 的坑）；④ 响应体加 `elapsedMs`；⑤ `GET /` 根路由探活 + health 返回端点表；⑥ 新增 `tools/site_check.py`（臂/手/相机/服务/未标定项 30 秒汇总自检）和 `tools/debug_console.py`（读位姿直接打印可粘进 site.yaml 的格式，Jog/手型/拍照/模拟调接口）；⑦ pytesseract 残留依赖清除（代码早已 subprocess 直连）。自检 28 项全绿。team01 的正则注入标定、欧拉角喂 Rodrigues、无锁端点、预设坐标表演经核对全是坑，一个没搬。
+**还剩啥**：`results/*.json → site.yaml` 映射接线（手眼链代码第六轮已统一为 `t_base_end @ t_end_camera`，04 的 `t_end_camera` 原样填进 site.yaml 即可；接线前视觉结果不得用于真机）；task1 两套亮灯检测现场二选一（05 README 有说明）；真机联调。**待核实事实冲突**：灵巧手型号（我方按 O10 :8088/字段 position，team01 按 DexHand :5001/字段 positions——开赛拿官方文档确认，二选一全仓统一）；平台是否轮询 `GET /`（已加根路由，无害）。
 
 ## 02-机械臂
 
@@ -71,6 +74,11 @@ TJCEIE_ZHONGKONG/（仓库根）
 
 **做了啥**：官方 mock 拷贝 + 对接验收 7 步 README；mock 实跑验证（health/task1/task2/task3 全 success，空 body 行为已对齐真服务——见 BUG-4 修复）。
 **还剩啥**：用 WPF 测试工具实测超时容忍度（--taskX-delay 8/60/120 秒）；真服务替换 mock 后全流程验收。
+
+## 09-现场部署
+
+**做了啥**（第七轮新增）：U 盘清单 + `下载wheels.bat`（pip download 离线包）+ `现场安装.bat`（离线装依赖 → import aiohttp 冒烟 → tesseract eng 数据校验 → 跑 selftest）。依赖轻不做 Docker。
+**还剩啥**：在家跑一次 `下载wheels.bat` 生成 wheels/ 目录；确认比赛机 Python 版本（代码要求 3.11/3.12）。
 
 ---
 

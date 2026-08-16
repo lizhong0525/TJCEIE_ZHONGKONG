@@ -194,6 +194,10 @@ class ServiceConfig:
     safe_home: Vec3 = field(default_factory=lambda: Vec3(0.275, 0.0, 0.48))
     # 运动默认末端姿态（已验证推荐姿态，平面向下）；赛题 1 立面面板/赛题 2 姿态分现场可能要调
     default_rpy: tuple[float, float, float] = (-3.141, -1.552, 3.141)
+    # JSONL 请求日志目录（相对路径基于 site.yaml 所在项目根解析）
+    log_dir: str = "logs"
+    # true = 假跑联调模式：接口返回 success 但机器人不动；启动会打大红字警告，上场前必须改回 false
+    dry_run: bool = False
 
 
 @dataclass
@@ -266,6 +270,16 @@ def _to_str(v: Any, default: str = "") -> str:
     if v is None:
         return default
     return str(v)
+
+
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _to_pose_list(v: Any, default: list[float]) -> list[float]:
@@ -421,6 +435,8 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
         final_vel=_to_float(svc_raw.get("final_vel"), 0.05),
         safe_home=_to_vec3(svc_raw.get("safe_home")) if svc_raw.get("safe_home") else Vec3(0.275, 0.0, 0.48),
         default_rpy=_to_rpy(svc_raw.get("default_rpy")),
+        log_dir=_to_str(svc_raw.get("log_dir"), "logs"),
+        dry_run=_to_bool(svc_raw.get("dry_run"), False),
     )
 
     cam_raw = raw.get("camera", {}) or {}

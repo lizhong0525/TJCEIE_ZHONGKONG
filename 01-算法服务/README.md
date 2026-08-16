@@ -3,6 +3,18 @@
 竞赛软件唯一对接口：监听 5000 端口的 HTTP 服务，实现 `GET /api/health` + `POST /api/task1|task2|task3/execute`。
 代码来自 `TJCEIE_ZHONGKONG-main` 仓库（`algorithm_service/` + `config/` + 服务端工具）。
 
+## 已知风险与应对（出问题先看这表）
+
+| 风险 | 应对 |
+|---|---|
+| 坐标/手眼没标定 | `tools/debug_console.py` 读位姿直接打印可粘进 site.yaml 的格式；手眼填 04 输出的 `t_end_camera` 原值 |
+| 工控机无外网 | `../09-现场部署/` 离线 wheel 包 + 现场安装.bat（含 tesseract eng 数据校验） |
+| `import aiohttp` 崩（conda ssl 混装） | 换 python.org 官方 Python；安装脚本第 2 步会先验 |
+| 接口 success 但机器人不动 | `service.dry_run` 忘关——启动大红字警告 + `/api/config/summary` 回显 |
+| 任务失败不知原因 | `logs/YYYYMMDD.jsonl` 每行含 `result_message` + `elapsed_ms` |
+| 开赛不知还差啥 | `GET /api/config/summary` 的 `uncalibrated` 清单；`tools/site_check.py` 30 秒全检 |
+| 竞赛软件超时 | 用 08 mock 的 `--taskX-delay` 实测容忍度，真机动作拆小 |
+
 ## 结构
 
 - `algorithm_service/server.py` — aiohttp 服务：4 个接口、全局互斥锁（并发返回 `busy`）、异常兜底返回 `success=false`
@@ -11,13 +23,14 @@
 - `algorithm_service/hardware/hand.py` — O10 灵巧手客户端（独立调试副本在 `../03-灵巧手/`）
 - `algorithm_service/planner/` — `safe_home/approach/pick/place` 动作库 + 安全区校验（占位/越界直接拒动）
 - `algorithm_service/tasks/task1|2|3.py` — 三赛题流程骨架；`taskX_vision.py` 为视觉最小版
-- `algorithm_service/vision/camera.py` — 旧视觉封装（眼在手外假设，**待被 `../04-相机/` 的眼在手上链取代**）
+- `algorithm_service/vision/camera.py` — 视觉封装（eye-in-hand 链 `t_base_end @ t_end_camera` 已与 04 统一）
 - `tools/service_selftest.py` — 端到端自检（in-process mock 硬件）；`tools/calibrate.py` — 人工标定录入（备选路线）
+- `tools/site_check.py` — 标定日 30 秒汇总自检（臂/手/相机/服务/未标定项）；`tools/debug_console.py` — 交互式调试台（读位姿直接打印可粘进 site.yaml 的格式）
 
 ## 运行
 
 ```powershell
-pip install aiohttp pyyaml numpy requests opencv-contrib-python pytesseract
+pip install aiohttp pyyaml numpy requests opencv-contrib-python
 python -m algorithm_service                 # 默认 0.0.0.0:5000, config/site.yaml
 python tools/service_selftest.py            # 端到端自检
 python tools/calibrate.py                   # 现场人工录入标定值

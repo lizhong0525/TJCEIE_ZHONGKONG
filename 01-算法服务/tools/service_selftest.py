@@ -30,6 +30,8 @@
     （重拍失败标注"已重拍一次" / 数量校验提示不写死块数）。
 15. 单元级（B3 手眼链落盘）：t_base_end @ t_end_camera 全链数学（_coords 与
     Vision 两条路径）、缺 t_base_end 拒算，共 3 种。
+16. 调试端点（A1/A2/B3）：GET / 探活、/api/config/summary 未标定清单、
+    每次任务请求落 JSONL（含 elapsed_ms/result_message）。
 
 用法：``python -m tools.service_selftest``，失败 exit 1。
 """
@@ -331,7 +333,7 @@ def build_app(cfg_raw: dict[str, Any], captured: dict[str, Any]):
         return {"placed": res.placed, "skipped": res.skipped, "failed": res.failed}
 
     runner = TaskRunner(task1=_t1, task2=_t2, task3=_t3)
-    app = app_factory(runner, ROOT / "config" / "site.yaml")
+    app = app_factory(runner, ROOT / "config" / "site.yaml", cfg)
     return app, arm, hand
 
 
@@ -519,6 +521,9 @@ async def main_async(args: list[str]) -> int:
 
     report = Report()
     captured: dict[str, Any] = {"color": blank_image(), "depth": None}
+    import tempfile
+    log_tmp = tempfile.mkdtemp(prefix="selftest_logs_")
+    MOCK_CFG_RAW["service"]["log_dir"] = log_tmp  # JSONL 落盘场景用临时目录，别污染仓库
     app, arm, hand = build_app(MOCK_CFG_RAW, captured)
     runner_http, port = await _start(app)
     base = f"http://127.0.0.1:{port}"
@@ -653,6 +658,43 @@ async def main_async(args: list[str]) -> int:
         expect("task3 空图→失败", await call("task3", "POST", "/api/task3/execute"),
                success=False, msg_has="shape recognition failed")
 
+        # 7c. 调试端点：GET / 探活 + /api/config/summary 未标定清单
+        expect("GET / 根路由", await call("root", "GET", "/"), success=True, msg_has="ready")
+        import copy
+
+        cfg_ph = copy.deepcopy(MOCK_CFG_RAW)
+        cfg_ph["camera"] = {k: "__现场标定后填入__" for k in ("fx", "fy", "cx", "cy")}
+        app_ph, _, _ = build_app(cfg_ph, {"color": blank_image(), "depth": None})
+        runner_ph, port_ph = await _start(app_ph)
+        try:
+            async with aiohttp.ClientSession() as sess_ph:
+                t0 = time.perf_counter()
+                async with sess_ph.get(
+                    f"http://127.0.0.1:{port_ph}/api/config/summary",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    body_sum = await r.json()
+            uncal = body_sum.get("uncalibrated", [])
+            ok_sum = (
+                body_sum.get("success") is True
+                and "camera.fx" in uncal
+                and body_sum.get("dryRun") is False
+            )
+            report.add("summary-未标定清单", ok_sum, (time.perf_counter() - t0) * 1000,
+                       f"未标定 {len(uncal)} 项 dryRun={body_sum.get('dryRun')}")
+        finally:
+            await runner_ph.cleanup()
+
+        # 7d. JSONL 请求日志落盘（上面跑过的 task 调用都应留有记录）
+        log_files = list(Path(log_tmp).glob("*.jsonl"))
+        ok_log = False
+        detail_log = "无文件"
+        if log_files:
+            lines = log_files[0].read_text(encoding="utf-8").strip().splitlines()
+            ok_log = any(json.loads(line).get("task") == "task2" for line in lines)
+            detail_log = f"{len(lines)} 行, 含 task2={ok_log}"
+        report.add("JSONL 日志落盘", ok_log, 0.0, detail_log)
+
     await runner_http.cleanup()
 
     # 7b. task3 形状名与 kinds 对不上 → 全跳过也必须 success=false（A1 防线）
@@ -675,7 +717,7 @@ async def main_async(args: list[str]) -> int:
 
     # 8. 全占位配置：必须清晰报"未标定/未配置"，绝不裸抛 ValueError
     captured2: dict[str, Any] = {"color": shapes_image(), "depth": None}
-    app2, _, _ = build_app({}, captured2)
+    app2, _, _ = build_app({"service": {"log_dir": log_tmp}}, captured2)
     runner2, port2 = await _start(app2)
     base2 = f"http://127.0.0.1:{port2}"
     async with aiohttp.ClientSession() as sess2:
@@ -717,8 +759,11 @@ async def main_async(args: list[str]) -> int:
             await asyncio.sleep(0.8)
             return {"slow": True}
 
+    from algorithm_service.config import from_dict as _fd
+
     slow_app = _af(_TR(task1=_SlowTask(), task2=_SlowTask(), task3=_SlowTask()),
-                   ROOT / "config" / "site.yaml")
+                   ROOT / "config" / "site.yaml",
+                   _fd({"service": {"log_dir": log_tmp}}))
     runner3, port3 = await _start(slow_app)
     base3 = f"http://127.0.0.1:{port3}"
     t0 = time.perf_counter()
