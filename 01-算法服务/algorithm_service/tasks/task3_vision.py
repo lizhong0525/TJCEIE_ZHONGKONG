@@ -17,6 +17,8 @@ from typing import Any
 from ..planner import Pose
 from ._coords import center_depth_m, pixel_to_base_pose, staging_pose
 
+from .pose_estimator import estimate_6d_pose
+
 LOG = logging.getLogger(__name__)
 
 
@@ -73,14 +75,62 @@ def classify_shapes(
             shape = "irregular"
 
         cx, cy = int(rect[0][0]), int(rect[0][1])
-        depth_val = center_depth_m(depth_mm, cx, cy)
-        if depth_val is not None:
-            pick = pixel_to_base_pose(cx, cy, depth_val, cfg, t_base_end)
-        elif depth_mm is not None:
-            LOG.warning("形状块中心 (%d,%d) 深度无效，跳过该块（宁可漏识别也不用错坐标）", cx, cy)
-            continue
+
+        # ---------- 用点云做 6D 位姿估计 ----------
+        if depth_mm is not None:
+            # 1. 用轮廓的 bounding box 切出深度图区域
+            x, y, w_box, h_box = cv2.boundingRect(cnt)
+            pad = 10
+            x0 = max(0, x - pad)
+            y0 = max(0, y - pad)
+            x1 = min(depth_mm.shape[1], x + w_box + pad)
+            y1 = min(depth_mm.shape[0], y + h_box + pad)
+            depth_roi = depth_mm[y0:y1, x0:x1].astype(np.float32)
+
+            # 2. 生成点云（只取有效深度）
+            rows, cols = depth_roi.shape
+            u_coords, v_coords = np.meshgrid(np.arange(cols), np.arange(rows))
+            depth_m = depth_roi / 1000.0
+            valid = (depth_m > 0.1) & (depth_m < 5.0)
+            if np.sum(valid) < 10:
+                LOG.warning("形状块点云有效点太少，跳过该块")
+                continue
+
+            fx = float(cfg.camera.fx)
+            fy = float(cfg.camera.fy)
+            cx0 = float(cfg.camera.cx)
+            cy0 = float(cfg.camera.cy)
+
+            x_c = (u_coords[valid] - cx0) * depth_m[valid] / fx
+            y_c = (v_coords[valid] - cy0) * depth_m[valid] / fy
+            z_c = depth_m[valid]
+            pts_cam = np.stack([x_c, y_c, z_c], axis=1)
+
+            # 3. 调用位姿估计（相机坐标系下）
+            pose_cam = estimate_6d_pose(pts_cam)
+
+            # 4. 手眼变换 → 机械臂基座坐标
+            he = np.array(cfg.hand_eye.matrix, dtype=np.float64)
+            p_cam = np.array([
+                pose_cam["position"][0],
+                pose_cam["position"][1],
+                pose_cam["position"][2],
+                1.0
+            ])
+            p_base = he @ p_cam
+
+            pick = Pose(
+                float(p_base[0]),
+                float(p_base[1]),
+                float(p_base[2]),
+                pose_cam["orientation"][0],  # roll
+                pose_cam["orientation"][1],  # pitch
+                pose_cam["orientation"][2]   # yaw
+            )
         else:
+            # 无深度图时回退到 staging 区域（仅自检场景）
             pick = staging_pose(staging, "shapes.staging_area")
+
         out.append(_Shape(block_id=f"shape_{i}", shape=shape, pick=pick))
         if len(out) >= 16:
             break
