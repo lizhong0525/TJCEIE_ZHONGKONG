@@ -16,7 +16,7 @@
 4. task1 无灯亮 → success=false，message 含"未检测到亮灯"，且失败后撤回安全位。
 5. task2 空图 → success=false，message 含"digit recognition failed"，且失败后撤回。
 6. task2 四数字合成图 → success=true，严格按 1→2→3→4 全入槽（真实 OCR 正路径）。
-7. task3 三种形状合成图 → success=true，placed=3，臂到过 3 个槽位。
+7. task3 四种形状合成图（三棱柱/正六棱柱/长方体/圆柱体） → success=true，placed=4，臂到过 4 个槽位。
 8. task3 单块放置失败 → success=true 且 failed 列出该块（7.7 继续分拣）。
 9. task3 灵巧手错误码非 0 → success=false，message 含"错误码"（8.4）。
 10. task3 空图 → success=false，message 含"shape recognition failed"。
@@ -194,16 +194,17 @@ MOCK_CFG_RAW: dict[str, Any] = {
     "shapes": {
         "staging_area": {"x": 0.25, "y": -0.12, "z": 0.45},
         "kinds": [
-            {"name": "round", "slots": [
-                {"name": "round_slot_1", "pos": {"x": 0.30, "y": -0.25, "z": 0.45}},
-                {"name": "round_slot_2", "pos": {"x": 0.32, "y": -0.25, "z": 0.45}},
+            {"name": "triangular_prism", "slots": [
+                {"name": "triangular_prism_slot_1", "pos": {"x": 0.30, "y": -0.25, "z": 0.45}},
             ]},
-            {"name": "square", "slots": [
-                {"name": "square_slot_1", "pos": {"x": 0.34, "y": -0.25, "z": 0.45}},
-                {"name": "square_slot_2", "pos": {"x": 0.36, "y": -0.25, "z": 0.45}},
+            {"name": "hexagonal_prism", "slots": [
+                {"name": "hexagonal_prism_slot_1", "pos": {"x": 0.32, "y": -0.25, "z": 0.45}},
             ]},
-            {"name": "irregular", "slots": [
-                {"name": "irregular_slot_1", "pos": {"x": 0.38, "y": -0.25, "z": 0.45}},
+            {"name": "rectangular_prism", "slots": [
+                {"name": "rectangular_prism_slot_1", "pos": {"x": 0.34, "y": -0.25, "z": 0.45}},
+            ]},
+            {"name": "cylinder", "slots": [
+                {"name": "cylinder_slot_1", "pos": {"x": 0.36, "y": -0.25, "z": 0.45}},
             ]},
         ],
     },
@@ -235,14 +236,21 @@ def blank_image() -> np.ndarray:
 
 
 def shapes_image() -> np.ndarray:
-    """圆 + 正方 + 细长矩形 三个白色形状（task3 分类确定性输入）。"""
+    """三棱柱 + 正六棱柱 + 长方体 + 圆柱体 四个白色形状（task3 分类确定性输入）。
+
+    各形状画法经整合管线实测分类稳定（六边形旋转 15° 使其 fill_ratio 落入
+    六棱柱分支；圆/三角/矩形常规画法即可）。
+    """
 
     import cv2
 
     img = np.full((600, 800, 3), 30, dtype=np.uint8)
-    cv2.circle(img, (200, 300), 50, (255, 255, 255), -1)          # round
-    cv2.rectangle(img, (355, 255), (445, 345), (255, 255, 255), -1)  # square
-    cv2.rectangle(img, (580, 240), (620, 360), (255, 255, 255), -1)  # irregular (1:3)
+    cv2.circle(img, (150, 300), 70, (255, 255, 255), -1)               # cylinder
+    tri = np.array([[[330, 240]], [[390, 360]], [[270, 360]]], dtype=np.int32)
+    cv2.fillPoly(img, [tri], (255, 255, 255))                          # triangular_prism
+    hexpts = cv2.ellipse2Poly((540, 300), (52, 52), 15, 0, 360, 60).reshape(-1, 1, 2)
+    cv2.fillPoly(img, [hexpts], (255, 255, 255))                       # hexagonal_prism
+    cv2.rectangle(img, (660, 250), (700, 350), (255, 255, 255), -1)    # rectangular_prism
     return img
 
 
@@ -617,31 +625,33 @@ async def main_async(args: list[str]) -> int:
         expect("task2 四数字→按序入槽", res, success=True, msg_has="task2 ok", extra_ok=t2_ok,
                extra=f"槽位/手型={'OK' if t2_ok else 'BAD'} msg={res['body'].get('message', '')}")
 
-        # 6. task3 三形状 → 全部入槽
+        # 6. task3 四形状 → 全部入槽
         arm.calls.clear(); hand.poses.clear()
         captured["color"] = shapes_image()
         res = await call("task3", "POST", "/api/task3/execute")
         placed = res["body"].get("message", "")
         slots_ok = (
-            arm.visited(0.30, -0.25, 0.45)   # round_slot_1
-            and arm.visited(0.34, -0.25, 0.45)  # square_slot_1
-            and arm.visited(0.38, -0.25, 0.45)  # irregular_slot_1
-            and hand.poses.count("grasp_shape") == 3
+            arm.visited(0.30, -0.25, 0.45)   # triangular_prism_slot_1
+            and arm.visited(0.32, -0.25, 0.45)  # hexagonal_prism_slot_1
+            and arm.visited(0.34, -0.25, 0.45)  # rectangular_prism_slot_1
+            and arm.visited(0.36, -0.25, 0.45)  # cylinder_slot_1
+            and hand.poses.count("grasp_shape") == 4
         )
-        expect("task3 三形状→入槽", res, success=True, msg_has="task3 ok", extra_ok=slots_ok,
+        expect("task3 四形状→入槽", res, success=True, msg_has="task3 ok", extra_ok=slots_ok,
                extra=f"槽位={'OK' if slots_ok else 'BAD'} msg={placed}")
 
-        # 6b. task3 单块失败不中止（7.7）：square 槽位注入失败 → 其余两块照常入槽
+        # 6b. task3 单块失败不中止（7.7）：rectangular_prism 槽位注入失败 → 其余三块照常入槽
         arm.calls.clear(); hand.poses.clear()
-        arm.fail_on = {(0.34, -0.25, 0.45)}  # square_slot_1
+        arm.fail_on = {(0.34, -0.25, 0.45)}  # rectangular_prism_slot_1
         captured["color"] = shapes_image()
         res = await call("task3", "POST", "/api/task3/execute")
         arm.fail_on = set()
         msg6b = str(res["body"].get("message", ""))
         partial_ok = (
-            arm.visited(0.30, -0.25, 0.45)      # round 照常
-            and arm.visited(0.38, -0.25, 0.45)  # irregular 照常
-            and '"failed"' in msg6b and "square" in msg6b
+            arm.visited(0.30, -0.25, 0.45)      # triangular_prism 照常
+            and arm.visited(0.32, -0.25, 0.45)  # hexagonal_prism 照常
+            and arm.visited(0.36, -0.25, 0.45)  # cylinder 照常
+            and '"failed"' in msg6b and "rectangular_prism" in msg6b
         )
         expect("task3 单块失败→继续", res, success=True, msg_has="task3 ok", extra_ok=partial_ok,
                extra=f"部分完成={'OK' if partial_ok else 'BAD'} msg={msg6b}")

@@ -108,24 +108,27 @@ digit_blocks:
     - {name: slot_4, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
 
 # --- 赛题 3：形状与槽位 ---
+# kinds.name 必须与 task3_vision 的 7.2 四分类输出名一致（槽外侧标注的形状名称）：
+# triangular_prism 三棱柱 / hexagonal_prism 正六棱柱 / rectangular_prism 长方体 / cylinder 圆柱体
 shapes:
   staging_area: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}
   kinds:
-    - name: round
+    - name: triangular_prism
       slots:
-        - {name: round_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
-        - {name: round_slot_2, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
-    - name: square
+        - {name: triangular_prism_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
+    - name: hexagonal_prism
       slots:
-        - {name: square_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
-        - {name: square_slot_2, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
-    - name: irregular
+        - {name: hexagonal_prism_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
+    - name: rectangular_prism
       slots:
-        - {name: irregular_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
+        - {name: rectangular_prism_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
+    - name: cylinder
+      slots:
+        - {name: cylinder_slot_1, pos: {x: __现场标定后填入__, y: __现场标定后填入__, z: __现场标定后填入__}}
 
 # --- 标定流程参数 ---
 calibration:
   # 视觉标定 vs 人工测量（或视觉两次互测）的交叉校验容差，单位 m。
   # 偏差超过该值时标定工具拒绝写盘并报警。
-  # ★ 现场可改：按实测精度调整，改完重启算法服务生效。详见 docs/现场标定说明.md
+  # ★ 现场可改：按实测精度调整，改完重启算法服务生效。标定步骤详见 ../操作指南.md 第 4 节
   cross_check_tol: 0.005

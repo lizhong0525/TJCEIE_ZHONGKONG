@@ -147,7 +147,7 @@ class DigitBlocks:
 
 @dataclass
 class ShapeKind:
-    name: str = ""            # round / square / irregular …
+    name: str = ""            # triangular_prism / hexagonal_prism / rectangular_prism / cylinder …
     slots: list[Slot] = field(default_factory=list)
 
 

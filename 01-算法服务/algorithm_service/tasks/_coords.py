@@ -72,6 +72,60 @@ def staging_pose(staging: Any, label: str) -> Pose:
         raise PickError(f"{e}（当前无可用深度图，视觉只能回退到该区域中心）") from e
 
 
+def camera_intrinsics(cfg: Any) -> tuple[float, float, float, float]:
+    """校验并返回 ``(fx, fy, cx, cy)``；fx/fy 占位时抛 ``PickError``。"""
+
+    if is_placeholder(cfg.camera.fx) or is_placeholder(cfg.camera.fy):
+        raise PickError("相机内参未标定（camera.fx/fy 仍是占位），无法解算基座坐标")
+    return (
+        float(cfg.camera.fx),
+        float(cfg.camera.fy),
+        float(cfg.camera.cx),
+        float(cfg.camera.cy),
+    )
+
+
+def hand_eye_chain(cfg: Any, t_base_end: Any | None) -> tuple[Any, Any]:
+    """校验手眼链并返回 ``(t_base_end, t_end_camera)`` 两个 4×4 numpy 矩阵。
+
+    任一环节未标定/缺失都抛 ``PickError`` 指明缺什么——宁可报错也不猜坐标。
+    """
+
+    he = cfg.hand_eye.matrix
+    if not he or is_placeholder(he[0][0]):
+        raise PickError("手眼矩阵未标定（hand_eye.rows 仍是占位，应填 04 输出的 t_end_camera），无法解算基座坐标")
+    if t_base_end is None:
+        raise PickError("缺拍照时刻末端位姿 t_base_end（eye-in-hand 链需要拍照时读 /api/pose），拒绝猜坐标")
+
+    import numpy as np
+
+    try:
+        t_end_camera = np.array(he, dtype=np.float64)
+        t_be = np.array(t_base_end, dtype=np.float64)
+    except (TypeError, ValueError) as e:
+        raise PickError(f"手眼链含非数值项，无法解算基座坐标: {e}") from e
+    return t_be, t_end_camera
+
+
+def cam_points_to_base(
+    points_cam: Any,
+    cfg: Any,
+    t_base_end: Any | None = None,
+) -> Any:
+    """相机系 Nx3 点集（米）→ 基座系 Nx3。标定校验同 ``pixel_to_base_pose``。
+
+    7.3 点云位姿估计的质心、task2 单像素解算都走这一条链，保证全服务
+    只有一处 ``t_base_end @ t_end_camera`` 约定。
+    """
+
+    import numpy as np
+
+    t_be, t_end_camera = hand_eye_chain(cfg, t_base_end)
+    pts = np.atleast_2d(np.asarray(points_cam, dtype=np.float64))
+    pts_h = np.hstack([pts, np.ones((pts.shape[0], 1), dtype=np.float64)])
+    return (t_be @ t_end_camera @ pts_h.T).T[:, :3]
+
+
 def pixel_to_base_pose(
     u: float,
     v: float,
@@ -94,25 +148,8 @@ def pixel_to_base_pose(
     必漏资源。坐标解算只需要内参 + 手眼链，与采集完全无关。
     """
 
-    if is_placeholder(cfg.camera.fx) or is_placeholder(cfg.camera.fy):
-        raise PickError("相机内参未标定（camera.fx/fy 仍是占位），无法解算基座坐标")
-    he = cfg.hand_eye.matrix
-    if not he or is_placeholder(he[0][0]):
-        raise PickError("手眼矩阵未标定（hand_eye.rows 仍是占位，应填 04 输出的 t_end_camera），无法解算基座坐标")
-    if t_base_end is None:
-        raise PickError("缺拍照时刻末端位姿 t_base_end（eye-in-hand 链需要拍照时读 /api/pose），拒绝猜坐标")
-
-    import numpy as np
-
-    fx, fy = float(cfg.camera.fx), float(cfg.camera.fy)
-    cx0, cy0 = float(cfg.camera.cx), float(cfg.camera.cy)
+    fx, fy, cx0, cy0 = camera_intrinsics(cfg)
     x_c = (u - cx0) * depth_m / fx
     y_c = (v - cy0) * depth_m / fy
-    p_cam = np.array([x_c, y_c, depth_m, 1.0], dtype=np.float64)
-    try:
-        t_end_camera = np.array(he, dtype=np.float64)
-        t_be = np.array(t_base_end, dtype=np.float64)
-    except (TypeError, ValueError) as e:
-        raise PickError(f"手眼链含非数值项，无法解算基座坐标: {e}") from e
-    p_base = t_be @ t_end_camera @ p_cam
+    p_base = cam_points_to_base([[x_c, y_c, depth_m]], cfg, t_base_end)[0]
     return Pose(float(p_base[0]), float(p_base[1]), float(p_base[2]))

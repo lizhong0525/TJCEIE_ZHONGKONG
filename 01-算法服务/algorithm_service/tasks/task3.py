@@ -1,6 +1,7 @@
 """赛题 3 —— 多面体形状分类入槽。
 
-* 形状分类由 ``task3_vision.classify_shapes`` 给出（圆形/方形/异形）。
+* 形状分类由 ``task3_vision.classify_shapes`` 给出（7.2 四分类：triangular_prism/
+  hexagonal_prism/rectangular_prism/cylinder）。
 * 槽位由 ``cfg.shapes.kinds`` 按 ``name`` 查找；不强制顺序。
 * 跳过未登记类别并在 message 中记录。
 """

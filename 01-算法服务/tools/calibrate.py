@@ -215,10 +215,10 @@ def calibrate_site(config_path: Path) -> None:
     sh["staging_area"] = _ask_vec3("  staging_area", sh["staging_area"])
     kinds_in = sh.get("kinds") or []
     if not kinds_in:
+        # 默认模板 = 7.2 四分类输出名（与 task3_vision.shape_classifier 对齐）
         kinds_in = [
-            {"name": "round", "slots": [{"name": f"round_{i+1}", "pos": {"x": PLACEHOLDER, "y": PLACEHOLDER, "z": PLACEHOLDER}} for i in range(2)]},
-            {"name": "square", "slots": [{"name": f"square_{i+1}", "pos": {"x": PLACEHOLDER, "y": PLACEHOLDER, "z": PLACEHOLDER}} for i in range(2)]},
-            {"name": "irregular", "slots": [{"name": f"irregular_{i+1}", "pos": {"x": PLACEHOLDER, "y": PLACEHOLDER, "z": PLACEHOLDER}} for i in range(1)]},
+            {"name": name, "slots": [{"name": f"{name}_slot_1", "pos": {"x": PLACEHOLDER, "y": PLACEHOLDER, "z": PLACEHOLDER}}]}
+            for name in ("triangular_prism", "hexagonal_prism", "rectangular_prism", "cylinder")
         ]
     new_kinds: list[dict[str, Any]] = []
     for k in kinds_in:

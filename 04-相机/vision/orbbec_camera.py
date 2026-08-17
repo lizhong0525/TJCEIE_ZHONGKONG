@@ -28,7 +28,7 @@ class Gemini335Camera:
             import pyorbbecsdk as sdk  # type: ignore
         except ImportError as error:
             raise CameraUnavailable(
-                "未安装奥比中光Python SDK。请先安装pyorbbecsdk2，详见使用说明。"
+                "未安装奥比中光Python SDK。请先安装pyorbbecsdk2，详见操作指南.md 第 4 节。"
             ) from error
         return sdk
 
