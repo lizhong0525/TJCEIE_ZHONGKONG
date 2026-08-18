@@ -7,9 +7,8 @@ dependencies = [
     "aiohttp>=3.9",
     "pyyaml>=6.0",
     "opencv-contrib-python>=4.8",
-    "numpy>=1.26",
+    "numpy>=1.26,<2",
     "requests>=2.31",
-    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]

@@ -133,6 +133,7 @@ def place(
 
     if is_placeholder(cfg.pick.approach_height):
         approach_height = 0.08
+        LOG.warning("pick.approach_height 未标定，使用 0.08m 兜底（place 与 pick 一致）")
     else:
         approach_height = float(cfg.pick.approach_height)
 
@@ -151,8 +152,14 @@ def place(
 
 
 def hand_pose_table(cfg: SiteConfig) -> dict[str, list[float]]:
+    """六个手型总表；**含占位/非法值的手型直接拒动并指名**。
+
+    占位符防线覆盖 hand.poses：手型未标定（site.yaml 仍是 __现场标定后填入__）
+    时静默用 [0]*10 = 全握拳上场，比明确失败危险得多。
+    """
+
     h = cfg.hand
-    return {
+    table = {
         "open": list(h.open),
         "close": list(h.close),
         "grasp_digit": list(h.grasp_digit),
@@ -160,3 +167,9 @@ def hand_pose_table(cfg: SiteConfig) -> dict[str, list[float]]:
         "tap": list(h.tap),
         "flick": list(h.flick),
     }
+    bad = [name for name, pose in table.items() if any(is_placeholder(v) for v in pose)]
+    if bad:
+        raise PickError(
+            f"手型未标定：{bad}（site.yaml hand.poses 仍是占位/含非法值），拒绝动作"
+        )
+    return table

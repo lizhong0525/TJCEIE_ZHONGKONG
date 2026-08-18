@@ -4,8 +4,8 @@
   ``[(block_id, digit, pick_pose)]``）。
 * 排序按 ``cfg.digit_blocks.placement_order_target``（ascending/descending）。
 * 槽位顺序取 ``cfg.digit_blocks.slots``。
-* 真实坐标由 ``Vision.pixel_to_base`` 计算；这里接受 ``vision_capture`` 钩子直接返回
-  基座系坐标，便于 mock 与单元测试。
+* 真实坐标由 ``_coords.pixel_to_base_pose``（``t_base_end @ t_end_camera`` 链）计算；
+  这里接受 ``vision_capture`` 钩子直接返回帧，便于 mock 与单元测试。
 """
 from __future__ import annotations
 
@@ -76,11 +76,14 @@ def run(
             raise PickError(
                 "digit_blocks.expected_count 未标定或 <= 0（数量校验必须生效，请按赛题实际块数配置）"
             )
-        raw = recognize_digits(color, depth, cfg, frame.get("t_base_end"))
+        raw = recognize_digits(color, depth, cfg, frame.get("t_base_end"),
+                               allow_staging=bool(frame.get("allow_staging")))
         if (not raw) or len(raw) != expected:
             # 一次重拍重识别（6.6：没把握就重拍，绝不能猜；彩色/深度必须同一帧）
             frame2 = vision_capture() or {}
-            retry = recognize_digits(frame2.get("color"), frame2.get("depth"), cfg, frame2.get("t_base_end"))
+            retry = recognize_digits(frame2.get("color"), frame2.get("depth"), cfg,
+                                     frame2.get("t_base_end"),
+                                     allow_staging=bool(frame2.get("allow_staging")))
             # 挑更可信的一次：恰好识别够 expected 的优先，都没有就选数量更接近 expected 的
             # （"更多"≠"更对"：第一次误检 5 个、重拍正确 4 个时不能选错的）
             if len(retry) == expected:
@@ -92,10 +95,17 @@ def run(
                     f"digit recognition failed: got {len(raw)} expected {expected}（已重拍一次）"
                 )
 
-        # 排序
+        # 排序（白名单校验：拼错如 "desending" 归正 ascending 并告警，绝不静默反序）
         order = (cfg.digit_blocks.placement_order_target or "ascending").lower()
+        if order not in ("ascending", "descending"):
+            LOG.warning(
+                "placement_order_target=%r 不是 ascending/descending（拼写错误？），按 ascending 处理",
+                cfg.digit_blocks.placement_order_target,
+            )
+            order = "ascending"
         reverse = order == "descending"
-        raw_sorted = sorted(raw, key=lambda b: b.digit, reverse=reverse)
+        # 第二键 pick.x：同数字（识别异常时）也有确定性顺序
+        raw_sorted = sorted(raw, key=lambda b: (b.digit, b.pick.x), reverse=reverse)
 
         # 槽位
         slots = cfg.digit_blocks.slots
@@ -104,6 +114,12 @@ def run(
         if len(raw_sorted) > len(slots):
             raise PickError(
                 f"识别到 {len(raw_sorted)} 个长方体，槽位仅有 {len(slots)} 个"
+            )
+        if len(slots) != expected:
+            # 交叉告警：expected_count 与槽位数对不上多半是标定填错，不拦但留个记录
+            LOG.warning(
+                "expected_count=%d 与 slots 数量 %d 不一致（标定填错？），请核对 site.yaml",
+                expected, len(slots),
             )
 
         poses = hand_pose_table(cfg)

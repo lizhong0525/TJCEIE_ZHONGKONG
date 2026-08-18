@@ -56,9 +56,21 @@ def run(
         if color is None:
             raise PickError("camera not ready")
 
-        raw = classify_shapes(color, depth, cfg, frame.get("t_base_end"))
+        # 无深度图时只有显式注入的自检 mock（frame["allow_staging"]）才允许回退
+        # staging 坐标；生产链路无深度图会在 classify_shapes 里抛 PickError
+        allow_staging = bool(frame.get("allow_staging"))
+        raw = classify_shapes(color, depth, cfg, frame.get("t_base_end"),
+                              allow_staging=allow_staging)
         if not raw:
-            raise PickError("shape recognition failed: got 0")
+            # 与 task2 对齐：识别 0 个时重拍一次再判（没把握就重拍，绝不能猜）
+            frame2 = vision_capture() or {}
+            raw = classify_shapes(
+                frame2.get("color"), frame2.get("depth"), cfg,
+                frame2.get("t_base_end"),
+                allow_staging=bool(frame2.get("allow_staging")),
+            )
+        if not raw:
+            raise PickError("shape recognition failed: got 0（已重拍一次）")
 
         poses = hand_pose_table(cfg)
         placed: list[tuple[str, str]] = []

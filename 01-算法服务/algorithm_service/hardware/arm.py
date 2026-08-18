@@ -4,8 +4,9 @@
 
 * 同步 ``requests`` 客户端，便于在线程中调用。
 * 默认右臂工作区，``mode=right_arm`` + 嵌套对象 ``right={x,y,z,roll,pitch,yaw}``。
-* ``line_to`` 默认直线 + 速度 ``0.12``；越工作域会触发 OMPL 回退（**不视为失败**）。
-* 阻塞上限 60s（HTTP）；用 ``timeout=90`` 兜底。
+* ``line_to`` 默认直线 + 速度 ``0.12``；直线回退自由路径（message 含 OMPL/RRT）
+  会抛 ``ArmError`` 按失败处理（运动已执行完，任务层走失败撤回）。
+* 阻塞上限 60s（HTTP）；``line_to`` 用 ``timeout=90`` 兜底，``joints`` 用 180。
 * 不依赖 ``websockets``；WebSocket 路径留给后续优化（异步进度），不阻塞初版。
 """
 from __future__ import annotations
@@ -44,20 +45,28 @@ class ArmClient:
 
     # ---- 查询 -------------------------------------------------------------
 
+    def _get_json(self, path: str) -> dict[str, Any]:
+        """查询类 GET：网络抖动重试一次（**运动 POST 绝不重试**，只用于查询）。"""
+
+        last: Exception | None = None
+        for _ in range(2):
+            try:
+                r = self._s.get(f"{self.base}{path}", timeout=5)
+                r.raise_for_status()
+                return r.json()
+            except requests.RequestException as e:
+                last = e
+                LOG.debug("GET %s 失败，重试一次: %s", path, e)
+        raise last  # type: ignore[misc]
+
     def status(self) -> dict[str, Any]:
-        r = self._s.get(f"{self.base}/api/status", timeout=5)
-        r.raise_for_status()
-        return r.json()
+        return self._get_json("/api/status")
 
     def pose(self) -> dict[str, Any]:
-        r = self._s.get(f"{self.base}/api/pose", timeout=5)
-        r.raise_for_status()
-        return r.json()
+        return self._get_json("/api/pose")
 
     def motors(self) -> dict[str, Any]:
-        r = self._s.get(f"{self.base}/api/motors", timeout=5)
-        r.raise_for_status()
-        return r.json()
+        return self._get_json("/api/motors")
 
     def healthy(self) -> bool:
         try:
@@ -138,8 +147,14 @@ class ArmClient:
         resp = self._post_json("/api/end_effector", body)
         if not resp.get("success", False):
             raise ArmError(resp.get("message", "未知失败"))
-        if "OMPL" in (resp.get("message") or ""):
-            LOG.warning("直线回退 OMPL（自由路径）：目标=(%s,%s,%s)", x, y, z)
+        msg = (resp.get("message") or "")
+        low = msg.lower()
+        if "ompl" in low or "rrt" in low:
+            # 直线规划回退成自由路径（可能穿台/绕大圈）。此时运动已执行完，
+            # 业务层拿不到 message 就会当成功——必须抛错让任务走失败撤回
+            raise ArmError(
+                f"直线回退自由路径（{msg}）：目标=({x}, {y}, {z})，按失败处理并撤回"
+            )
         return resp
 
     def free_move(

@@ -45,20 +45,50 @@ class HandClient:
 
     # ---- 查询 -------------------------------------------------------------
 
+    def _get_json(self, path: str) -> dict[str, Any]:
+        """查询类 GET：网络抖动重试一次（**运动 POST 绝不重试**，只用于查询）。"""
+
+        last: Exception | None = None
+        for _ in range(2):
+            try:
+                r = self._s.get(f"{self.base}{path}", timeout=5)
+                r.raise_for_status()
+                return r.json()
+            except requests.RequestException as e:
+                last = e
+                LOG.debug("GET %s 失败，重试一次: %s", path, e)
+        raise last  # type: ignore[misc]
+
     def status(self) -> dict[str, Any]:
-        r = self._s.get(f"{self.base}/api/status", timeout=5)
-        r.raise_for_status()
-        return r.json()
+        data = self._get_json("/api/status")
+        # P0-1：O10（:8088，position）与 DexHand（:5001，positions）响应结构不同，
+        # 缺键说明型号/固件对不上，必须第一时间炸出来而不是静默当正常
+        missing = [k for k in ("connected", "hand_type") if k not in data]
+        if missing:
+            raise HandError(
+                f"status 响应缺 {missing} 键，疑似 DexHand 或固件不同：keys={sorted(data.keys())}"
+            )
+        return data
 
     def pose(self) -> list[float]:
-        r = self._s.get(f"{self.base}/api/pose", timeout=5)
-        r.raise_for_status()
-        return r.json().get("position", [])
+        data = self._get_json("/api/pose")
+        # O10 字段 position；DexHand 字段 positions——两个都认，都没有就是型号不对
+        pos = data.get("position") or data.get("positions")
+        if pos is None:
+            raise HandError(
+                f"pose 响应缺 position/positions 字段，疑似 DexHand 或固件不同：keys={sorted(data.keys())}"
+            )
+        return list(pos)
 
     def errors(self) -> list[int]:
-        r = self._s.get(f"{self.base}/api/errors", timeout=5)
-        r.raise_for_status()
-        return r.json().get("error_codes", [])
+        data = self._get_json("/api/errors")
+        if "error_codes" not in data:
+            # 字段缺失时返回哨兵 [-1]*10：watcher 会把它当非 0 错误码中止任务，
+            # 绝不能让 8.4 堵转检测静默失效（error_codes 改名 = 检测从第一秒就是死的）
+            LOG.error("errors 响应缺 error_codes 字段，疑似 DexHand 或固件不同：keys=%s",
+                      sorted(data.keys()))
+            return [-1] * 10
+        return list(data["error_codes"])
 
     # ---- 控制 -------------------------------------------------------------
 

@@ -72,6 +72,9 @@ def _make_jsonl_logger(cfg: SiteConfig, config_path: str | Path) -> Callable[[di
     def write(entry: dict[str, Any]) -> None:
         path = log_dir / f"{time.strftime('%Y%m%d')}.jsonl"
         try:
+            # 超 20MB 轮转成 .1（只留一档，防磁盘写满；比赛当天量小，主要防调试期积累）
+            if path.exists() and path.stat().st_size > 20 * 1024 * 1024:
+                path.replace(path.with_suffix(".jsonl.1"))
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:  # noqa: BLE001
@@ -118,7 +121,12 @@ def app_factory(
         return _ok("ready")
 
     async def health(request: web.Request) -> web.Response:
-        return web.json_response({"success": True, "message": "ready", "endpoints": ENDPOINTS})
+        c: SiteConfig = request.app["cfg"]
+        # dryRun 标记进 health：平台侧/测试工具一眼能看出"假跑忘关"（他队踩过的坑）
+        return web.json_response({
+            "success": True, "message": "ready", "endpoints": ENDPOINTS,
+            "dryRun": c.service.dry_run,
+        })
 
     async def config_summary(request: web.Request) -> web.Response:
         """调试端点：连接信息 + dry_run 回显 + 未标定清单（现场看这一个就够）。"""

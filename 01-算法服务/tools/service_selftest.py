@@ -32,6 +32,8 @@
     Vision 两条路径）、缺 t_base_end 拒算，共 3 种。
 16. 调试端点（A1/A2/B3）：GET / 探活、/api/config/summary 未标定清单、
     每次任务请求落 JSONL（含 elapsed_ms/result_message）。
+17. 单元级（2026-08-18 审查修复落盘）：无深度图生产链拒动、placement_order_target
+    拼错归正、unknown 置信门禁、手型占位拒动、手眼矩阵末行非法拒算，共 5 种。
 
 用法：``python -m tools.service_selftest``，失败 exit 1。
 """
@@ -254,6 +256,17 @@ def shapes_image() -> np.ndarray:
     return img
 
 
+def pentagon_image() -> np.ndarray:
+    """正五边形（四分类外的未知物）：应被置信门禁全部拦下。"""
+
+    import cv2
+
+    img = np.full((600, 800, 3), 30, dtype=np.uint8)
+    pent = cv2.ellipse2Poly((400, 300), (80, 80), 0, 0, 360, 72).reshape(-1, 1, 2)
+    cv2.fillPoly(img, [pent], (255, 255, 255))
+    return img
+
+
 def digits_image() -> np.ndarray:
     """4 个带数字的白色长方块（task2 OCR 确定性输入，本机 tesseract 已验证）。"""
 
@@ -377,7 +390,8 @@ def _unit_scenarios(report: Report) -> None:
     seq: list[int] = []
     calls = {"n": 0}
 
-    def fake_recognize(color: Any, depth: Any, cfg: Any, t_base_end: Any = None) -> list[Any]:
+    def fake_recognize(color: Any, depth: Any, cfg: Any, t_base_end: Any = None,
+                       *, allow_staging: bool = False) -> list[Any]:
         v = seq[min(calls["n"], len(seq) - 1)]
         calls["n"] += 1
         return fake_detected(v)
@@ -386,7 +400,7 @@ def _unit_scenarios(report: Report) -> None:
         cfg = from_dict(copy.deepcopy(cfg_raw or MOCK_CFG_RAW))
         img = blank_image()
         return task2.run(MockArm(), MockHand(), cfg,
-                         lambda: {"color": img, "depth": None})
+                         lambda: {"color": img, "depth": None, "allow_staging": True})
 
     def scenario(name: str, fn: Any) -> None:
         t0 = time.perf_counter()
@@ -517,6 +531,80 @@ def _unit_scenarios(report: Report) -> None:
     scenario("像素链-缺位姿拒算", s_chain_missing)
     scenario("像素链-Vision 同款", s_chain_vision)
 
+    # ---- 第五轮修复（审查报告 2026-08-18）的回归防线 ---------------------
+
+    from algorithm_service.tasks import task3
+
+    def s_no_depth_refused() -> str:
+        # 生产链路（无 allow_staging 注入）+ 无深度图 → 必须拒动，
+        # 绝不静默回退 staging 让 4 个块挤同一坐标还报 success
+        cfg = from_dict(copy.deepcopy(MOCK_CFG_RAW))
+        try:
+            task2.run(MockArm(), MockHand(), cfg,
+                      lambda: {"color": digits_image(), "depth": None})
+        except PickError as e:
+            assert "无深度图" in str(e), str(e)
+            return str(e)
+        raise AssertionError("无深度图且未显式 allow_staging 应拒动")
+
+    def s_desending_typo() -> str:
+        # placement_order_target 拼错（"desending"）→ 告警并归正 ascending，绝不静默反序
+        seq[:] = [4]
+        calls["n"] = 0
+        task2.recognize_digits = fake_recognize
+        try:
+            raw = copy.deepcopy(MOCK_CFG_RAW)
+            raw["digit_blocks"]["placement_order_target"] = "desending"
+            placed = run_task2(raw)
+        finally:
+            task2.recognize_digits = orig
+        digits = [b.digit for b in placed]
+        assert digits == [1, 2, 3, 4], f"拼错归正后仍应升序，实际 {digits}"
+        return f"desending 拼错 → 归正 ascending，落槽序={digits}"
+
+    def s_unknown_gated() -> str:
+        # 五边形（四分类外的物体）→ unknown 置信门禁全拦 → 任务明确失败而非放错槽
+        cfg = from_dict(copy.deepcopy(MOCK_CFG_RAW))
+        try:
+            task3.run(MockArm(), MockHand(), cfg,
+                      lambda: {"color": pentagon_image(), "depth": None, "allow_staging": True})
+        except PickError as e:
+            assert "shape recognition failed" in str(e), str(e)
+            return str(e)
+        raise AssertionError("unknown 全被门禁拦下时应明确失败")
+
+    def s_hand_pose_placeholder() -> str:
+        # 手型占位 → 拒动指名（占位符防线覆盖 hand.poses，不静默用全 0 握拳上场）
+        raw = copy.deepcopy(MOCK_CFG_RAW)
+        raw["hand"]["poses"]["grasp_digit"] = [PLACEHOLDER] * 10
+        cfg = from_dict(raw)
+        try:
+            task2.run(MockArm(), MockHand(), cfg,
+                      lambda: {"color": digits_image(), "depth": None, "allow_staging": True})
+        except PickError as e:
+            assert "手型未标定" in str(e) and "grasp_digit" in str(e), str(e)
+            return str(e)
+        raise AssertionError("手型占位应拒动")
+
+    def s_handeye_bad_last_row() -> str:
+        # 手眼矩阵填错半截（末行不是 [0,0,0,1]）→ 拒算（旧版只查 he[0][0] 会放行）
+        raw = copy.deepcopy(MOCK_CFG_RAW)
+        raw["hand_eye"]["rows"] = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 0.5]]
+        cfg = from_dict(raw)
+        t_be = xyzrpy_to_matrix({"x": 0.5, "y": 0.1, "z": 0.3, "roll": 0, "pitch": 0, "yaw": 0})
+        try:
+            pixel_to_base_pose(400, 300, 1.0, cfg, t_be)
+        except PickError as e:
+            assert "末行" in str(e), str(e)
+            return str(e)
+        raise AssertionError("手眼末行非法应拒算")
+
+    scenario("无深度图→拒动(生产链)", s_no_depth_refused)
+    scenario("order 拼错→归正告警", s_desending_typo)
+    scenario("unknown 置信门禁", s_unknown_gated)
+    scenario("手型占位→拒动指名", s_hand_pose_placeholder)
+    scenario("手眼末行非法→拒算", s_handeye_bad_last_row)
+
 
 # ---------------------------------------------------------------------------
 # 自检流程
@@ -528,7 +616,9 @@ async def main_async(args: list[str]) -> int:
     import aiohttp
 
     report = Report()
-    captured: dict[str, Any] = {"color": blank_image(), "depth": None}
+    # allow_staging=True：显式声明本帧来自自检 mock，无深度图时允许回退 staging 坐标
+    #（生产 capture 永远不带这个键——无深度图会被 task2/3 直接 PickError 拒动）
+    captured: dict[str, Any] = {"color": blank_image(), "depth": None, "allow_staging": True}
     import tempfile
     log_tmp = tempfile.mkdtemp(prefix="selftest_logs_")
     MOCK_CFG_RAW["service"]["log_dir"] = log_tmp  # JSONL 落盘场景用临时目录，别污染仓库
@@ -614,16 +704,24 @@ async def main_async(args: list[str]) -> int:
         expect("task2 空图→失败", res, success=False, msg_has="digit recognition failed",
                extra_ok=retreat2, extra=f"失败后撤回={'OK' if retreat2 else 'BAD'}")
 
-        # 5b. task2 四数字 → 严格按 1→2→3→4 全部入槽（正路径）
+        # 5b. task2 四数字 → 严格按 1→2→3→4 全部入槽（正路径，断言槽位访问顺序）
         arm.calls.clear(); hand.poses.clear()
         captured["color"] = digits_image()
         res = await call("task2", "POST", "/api/task2/execute")
+        slot_coords = [(0.30 + 0.02 * i, -0.25, 0.45) for i in range(4)]
+        first_visit = [
+            next((k for k, c in enumerate(arm.calls)
+                  if abs(c[0] - sx) < 1e-6 and abs(c[1] - sy) < 1e-6 and abs(c[2] - sz) < 1e-6),
+                 None)
+            for sx, sy, sz in slot_coords
+        ]
         t2_ok = (
-            all(arm.visited(0.30 + 0.02 * i, -0.25, 0.45) for i in range(4))
+            all(v is not None for v in first_visit)
+            and first_visit == sorted(first_visit)  # 严格按 slot_1→2→3→4 顺序到访
             and hand.poses.count("grasp_digit") == 4
         )
         expect("task2 四数字→按序入槽", res, success=True, msg_has="task2 ok", extra_ok=t2_ok,
-               extra=f"槽位/手型={'OK' if t2_ok else 'BAD'} msg={res['body'].get('message', '')}")
+               extra=f"槽位/手型={'OK' if t2_ok else 'BAD'} 首访序={first_visit} msg={res['body'].get('message', '')}")
 
         # 6. task3 四形状 → 全部入槽
         arm.calls.clear(); hand.poses.clear()
@@ -712,7 +810,7 @@ async def main_async(args: list[str]) -> int:
 
     cfg_no_kinds = copy.deepcopy(MOCK_CFG_RAW)
     cfg_no_kinds["shapes"]["kinds"] = []
-    captured3: dict[str, Any] = {"color": shapes_image(), "depth": None}
+    captured3: dict[str, Any] = {"color": shapes_image(), "depth": None, "allow_staging": True}
     app3, _, _ = build_app(cfg_no_kinds, captured3)
     runner3b, port3b = await _start(app3)
     base3b = f"http://127.0.0.1:{port3b}"
@@ -726,7 +824,7 @@ async def main_async(args: list[str]) -> int:
     await runner3b.cleanup()
 
     # 8. 全占位配置：必须清晰报"未标定/未配置"，绝不裸抛 ValueError
-    captured2: dict[str, Any] = {"color": shapes_image(), "depth": None}
+    captured2: dict[str, Any] = {"color": shapes_image(), "depth": None, "allow_staging": True}
     app2, _, _ = build_app({"service": {"log_dir": log_tmp}}, captured2)
     runner2, port2 = await _start(app2)
     base2 = f"http://127.0.0.1:{port2}"

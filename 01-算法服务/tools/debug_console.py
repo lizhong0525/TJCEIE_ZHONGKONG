@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -36,7 +37,7 @@ def main() -> int:
     cfg = load_cfg(ROOT / "config" / "site.yaml")
     svc = cfg.service
 
-    from algorithm_service.hardware import ArmClient, ArmError, HandClient
+    from algorithm_service.hardware import ArmClient, HandClient
 
     arm = ArmClient(host=svc.arm_host, port=svc.arm_port, side=svc.arm_side,
                     default_rpy=svc.default_rpy)
@@ -97,9 +98,12 @@ def main() -> int:
                     out.mkdir(exist_ok=True)
                     import cv2
 
-                    path = out / f"debug_{int(__import__('time').time())}.png"
-                    cv2.imwrite(str(path), frame.color)
-                    print(f"  已存 {path}")
+                    path = out / f"debug_{int(time.time())}.png"
+                    # 中文路径下 imwrite 可能静默失败（返回 False），必须查返回值
+                    if not cv2.imwrite(str(path), frame.color):
+                        print(f"  ! 存图失败（中文路径？）：{path}")
+                    else:
+                        print(f"  已存 {path}")
                 finally:
                     vision.close()
             elif choice == "6":
@@ -121,7 +125,7 @@ def main() -> int:
                 print("  已回安全位")
             elif choice == "0":
                 return 0
-        except (ArmError, Exception) as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             print(f"  失败: {e}")
 
 

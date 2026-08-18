@@ -116,9 +116,13 @@ def main() -> int:
     except ArmError as e:
         ok("不可达抛 ArmError", "planning strategies failed" in str(e), str(e))
 
-    # OMPL 回退：客户端只告警不抛错（注意：业务层需自行检查 message！）
-    r = arm.line_to(0.45, -0.16, 0.48)
-    ok("OMPL 回退仅告警", "OMPL" in r["message"], "客户端不抛错")
+    # OMPL/RRT 回退：客户端抛 ArmError 按失败处理（运动已执行完，业务层走失败撤回；
+    # 只告警不抛错时业务层拿不到 message 会当成功——静默走错路径比明确失败危险）
+    try:
+        arm.line_to(0.45, -0.16, 0.48)
+        raise SystemExit("FAIL: OMPL 回退没有抛 ArmError")
+    except ArmError as e:
+        ok("OMPL 回退抛 ArmError", "回退自由路径" in str(e), str(e))
 
     # joints 参数校验与正常执行
     try:

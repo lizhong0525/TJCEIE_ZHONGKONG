@@ -25,6 +25,8 @@ LABEL_TRIANGULAR_PRISM = "triangular_prism"
 LABEL_HEXAGONAL_PRISM = "hexagonal_prism"
 LABEL_RECTANGULAR_PRISM = "rectangular_prism"
 LABEL_CYLINDER = "cylinder"
+# 四分类都不满足时的兜底：宁可跳过该物体，也不静默塞进"长方体"槽（赛题红线）
+LABEL_UNKNOWN = "unknown"
 
 
 def extract_features(contour: np.ndarray) -> dict[str, float]:
@@ -148,10 +150,14 @@ def classify_shape(
     #
     # 因此不能只判断 vertices == 6。
     #
+    # fill_ratio 窗口 <0.76：正六边形连续值 0.696~0.75（0°/30° 最大，
+    # 离散像素实测 ≈0.737），圆恒为 π/4≈0.785、矩形≈1.0；
+    # 0.76 卡在六边形与圆之间的缝里，比旧阈值 0.74 更能兜住 0°/30° 摆放。
+    #
     if (
         6 <= vertices <= 8
         and circularity < 0.96
-        and fill_ratio < 0.74
+        and fill_ratio < 0.76
     ):
         confidence = min(
             0.90,
@@ -189,15 +195,14 @@ def classify_shape(
         )
 
     # ---------------------------------
-    # 5. 无法确定
+    # 5. 无法确定 → unknown
     # ---------------------------------
     #
-    # 当前暂时保留原有 fallback，
-    # 后续正式比赛建议改成 unknown，
-    # 并拒绝抓取。
+    # 四分类都不满足的轮廓（五边形、噪声圆、粘连物……）绝不静默塞进
+    # "长方体"——task3 对 unknown / 低置信一律跳过，宁可漏分拣也不放错槽。
     #
     return (
-        LABEL_RECTANGULAR_PRISM,
+        LABEL_UNKNOWN,
         confidence_threshold,
         features,
     )

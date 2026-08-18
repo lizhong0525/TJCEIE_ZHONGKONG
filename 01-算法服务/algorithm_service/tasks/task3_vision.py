@@ -3,11 +3,15 @@
 * 轮廓提取（Otsu→Canny→dilate）→ 7.2 规则四分类
   （``shape_classifier.classify_shape``：triangular_prism / hexagonal_prism /
   rectangular_prism / cylinder，类别名与 site.yaml ``shapes.kinds`` 对齐）。
+* **unknown 门禁**：分类兜底 ``unknown`` 的轮廓直接跳过
+  （宁可漏分拣也不放错槽；全跳过/全漏识别由 task3 的"一个都没放入槽"防线兜成失败）。
 * 坐标解算：有深度图时按轮廓遮罩出点云 → 7.3 质心 + PCA 主轴
   （``pose_estimator.estimate_6d_pose``）→ 手眼链
   ``t_base_end @ t_end_camera`` 转基座系；任一环节未标定抛 ``PickError``；
-  无深度图回退 ``shapes.staging_area``（必须已标定，否则抛 ``PickError``；
-  仅自检场景合理）。
+  无深度图且调用方显式 ``allow_staging=True``（仅自检 mock）时回退
+  ``shapes.staging_area``（必须已标定，否则抛 ``PickError``）；
+  生产链路无深度图直接抛 ``PickError``——所有块共用同一 staging 坐标
+  还报 success 比明确失败危险得多。
 * 物体姿态（PCA 主轴 RPY）目前只作识别记录（``_Shape.obj_rpy``）——运动链
   统一用 ``service.default_rpy`` 下爪，7.5 空中姿态校正接入时再用它。
 * 返回 ``[_Shape(block_id, shape, pick, obj_rpy)]``。
@@ -18,12 +22,16 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ..planner import Pose
+from ..planner import PickError, Pose
 from ._coords import cam_points_to_base, camera_intrinsics, staging_pose
 from .pose_estimator import estimate_6d_pose
-from .shape_classifier import classify_shape
+from .shape_classifier import LABEL_UNKNOWN, classify_shape
 
 LOG = logging.getLogger(__name__)
+
+# 分类置信度说明：各分支 conf ≥0.55（压线圆柱实测 0.57），兜底 unknown=0.55。
+# 门禁只按 **unknown 类别**拦——再叠置信阈值会把压线但正确的圆柱也误拦
+# （噪声圆 circularity 压 0.90 阈值线是已知隐患，conf 自然偏低）。
 
 
 @dataclass
@@ -75,6 +83,8 @@ def classify_shapes(
     depth_mm: Any | None,
     cfg: Any,
     t_base_end: Any | None = None,
+    *,
+    allow_staging: bool = False,
 ) -> list[_Shape]:
     import cv2  # type: ignore
     import numpy as np  # type: ignore
@@ -94,6 +104,12 @@ def classify_shapes(
     staging = cfg.shapes.staging_area
     intrinsics: tuple[float, float, float, float] | None = None
     if depth_mm is None:
+        if not allow_staging:
+            # 生产链路：无深度图时所有块会挤在同一个 staging 坐标上还报 success，
+            # 比明确失败危险得多（深度流静默丢失正是现场高发故障）
+            raise PickError(
+                "无深度图，拒绝执行（深度流未启用/丢失）；staging 兜底仅供显式注入的自检 mock"
+            )
         LOG.warning("无深度图：识别到的几何体统一使用 shapes.staging_area 坐标（仅自检场景合理）")
     else:
         # 有深度图就要解算基座坐标：内参先过守卫，缺标定直接抛 PickError，
@@ -112,6 +128,14 @@ def classify_shapes(
             continue
 
         shape, confidence, feat = classify_shape(cnt)
+        if shape == LABEL_UNKNOWN:
+            # unknown 门禁：分类没把握的物体跳过不抓（7.7 精神：把机会留给其余块；
+            # 全被门禁拦下时 task3 的"一个都没放入槽"防线会把任务判失败）
+            LOG.warning(
+                "形状块 %d 分类未知，跳过（顶点=%.0f 圆度=%.3f 填充=%.3f）",
+                i, feat["vertices"], feat["circularity"], feat["fill_ratio"],
+            )
+            continue
 
         obj_rpy: tuple[float, float, float] | None = None
         if depth_mm is not None:

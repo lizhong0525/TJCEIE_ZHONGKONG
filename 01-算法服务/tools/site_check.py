@@ -84,10 +84,19 @@ def main() -> int:
 
         hand = HandClient(host=svc.hand_host, port=svc.hand_port, hand_type=svc.hand_type)
         try:
-            hand.status()
-            ok("手 status", f"{svc.hand_host}:{svc.hand_port}")
+            # status() 已做结构校验（缺 connected/hand_type 键直接抛"疑似 DexHand"），
+            # 这里再把取值与配置比对，绝不让型号不对的手打出假绿
+            st = hand.status()
+            if st.get("connected") is not True:
+                fail("手 status", f"connected={st.get('connected')!r}（未连接）")
+            elif str(st.get("hand_type")) != svc.hand_type:
+                fail("手 status", f"hand_type={st.get('hand_type')!r} 与配置 {svc.hand_type!r} 不一致")
+            else:
+                ok("手 status", f"{svc.hand_host}:{svc.hand_port} hand_type={st.get('hand_type')}")
             errs = hand.errors()
-            if all(v == 0 for v in errs):
+            if len(errs) != 10:
+                fail("手 errors", f"长度 {len(errs)}≠10（字段结构异常，疑似 DexHand/固件不同）: {errs}")
+            elif all(v == 0 for v in errs):
                 ok("手 errors", "全 0")
             else:
                 fail("手 errors", f"非 0 错误码: {errs}")

@@ -127,12 +127,12 @@ def run(
         if color is None:
             raise PickError("camera not ready")
 
-        # 3. 识别唯一亮灯
-        lamp_name, invalid = detect_lit_lamp(color, cfg.panel.lamps, load_params())
+        # 3. 识别唯一亮灯（并列拒绝：反光两灯同亮时明确失败，不静默选错）
+        lamp_name, invalid, reject_reason = detect_lit_lamp(color, cfg.panel.lamps, load_params())
         if invalid:
             raise PickError(f"灯 ROI 未标定：{invalid}（site.yaml panel.lamps[].roi）")
         if lamp_name is None:
-            raise PickError("未检测到亮灯（所有灯 ROI 均未超阈值）")
+            raise PickError(reject_reason or "未检测到亮灯（所有灯 ROI 均未超阈值）")
         LOG.info("task1 亮灯 = %s", lamp_name)
         lamp = next((l for l in cfg.panel.lamps if l.name == lamp_name), None)
         if lamp is None:

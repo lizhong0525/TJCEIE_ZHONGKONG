@@ -73,16 +73,19 @@ def staging_pose(staging: Any, label: str) -> Pose:
 
 
 def camera_intrinsics(cfg: Any) -> tuple[float, float, float, float]:
-    """校验并返回 ``(fx, fy, cx, cy)``；fx/fy 占位时抛 ``PickError``。"""
+    """校验并返回 ``(fx, fy, cx, cy)``；任一占位/非有限值时抛 ``PickError``。
 
-    if is_placeholder(cfg.camera.fx) or is_placeholder(cfg.camera.fy):
-        raise PickError("相机内参未标定（camera.fx/fy 仍是占位），无法解算基座坐标")
-    return (
-        float(cfg.camera.fx),
-        float(cfg.camera.fy),
-        float(cfg.camera.cx),
-        float(cfg.camera.cy),
-    )
+    只查 fx/fy 会让 cx/cy 占位变成裸 ``ValueError`` 抛给竞赛软件（回归断言：
+    selftest 占位场景 message 不得含 "could not convert"）。
+    """
+
+    vals = (cfg.camera.fx, cfg.camera.fy, cfg.camera.cx, cfg.camera.cy)
+    if any(is_placeholder(v) for v in vals):
+        raise PickError("相机内参未标定（camera.fx/fy/cx/cy 仍是占位），无法解算基座坐标")
+    fx, fy, cx0, cy0 = (float(v) for v in vals)
+    if not all(math.isfinite(v) for v in (fx, fy, cx0, cy0)) or fx <= 0 or fy <= 0:
+        raise PickError(f"相机内参非法（{vals}，含 nan/inf 或非正焦距），无法解算基座坐标")
+    return (fx, fy, cx0, cy0)
 
 
 def hand_eye_chain(cfg: Any, t_base_end: Any | None) -> tuple[Any, Any]:
@@ -104,6 +107,20 @@ def hand_eye_chain(cfg: Any, t_base_end: Any | None) -> tuple[Any, Any]:
         t_be = np.array(t_base_end, dtype=np.float64)
     except (TypeError, ValueError) as e:
         raise PickError(f"手眼链含非数值项，无法解算基座坐标: {e}") from e
+    # 整矩阵校验（只查 he[0][0] 会放过"填错半截"的矩阵：坐标系统性偏移，
+    # safe_box 挡不住"偏了但仍在盒内"）
+    if t_end_camera.shape != (4, 4) or not np.all(np.isfinite(t_end_camera)):
+        raise PickError("手眼矩阵非法（形状不是 4x4 或含 nan/inf），无法解算基座坐标")
+    if not np.allclose(t_end_camera[3], [0, 0, 0, 1], atol=1e-6):
+        raise PickError(f"手眼矩阵末行应为 [0,0,0,1]，实际 {t_end_camera[3].tolist()}，无法解算基座坐标")
+    det = float(np.linalg.det(t_end_camera[:3, :3]))
+    if abs(det - 1.0) > 0.1:
+        raise PickError(f"手眼矩阵旋转块行列式={det:.3f}（应≈1），疑似填错/填反，无法解算基座坐标")
+    trans = t_end_camera[:3, 3]
+    if not np.all(np.abs(trans) < 1.0):
+        raise PickError(f"手眼矩阵平移量 {trans.tolist()} 超 1m（相机→末端偏移不该这么大），疑似填错")
+    if t_be.shape != (4, 4) or not np.all(np.isfinite(t_be)):
+        raise PickError("t_base_end 非法（形状不是 4x4 或含 nan/inf），拒绝解算坐标")
     return t_be, t_end_camera
 
 

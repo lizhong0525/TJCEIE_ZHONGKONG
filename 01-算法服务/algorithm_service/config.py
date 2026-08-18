@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,9 +35,6 @@ class Vec3:
     y: Any = PLACEHOLDER
     z: Any = PLACEHOLDER
 
-    def as_tuple(self) -> tuple[float, float, float]:
-        return (float(self.x), float(self.y), float(self.z))
-
 
 @dataclass
 class CameraIntrinsics:
@@ -56,7 +54,7 @@ class CameraDistortion:
 
 @dataclass
 class HandEye:
-    """基座→相机的 4×4 变换矩阵。"""
+    """T_end_camera（相机→末端）4×4 矩阵；完整链 = t_base_end @ t_end_camera。"""
 
     matrix: list[list[Any]] = field(
         default_factory=lambda: [[PLACEHOLDER] * 4 for _ in range(4)]
@@ -140,6 +138,7 @@ class DigitBlocks:
     expected_count: int = 0
     placement_order_target: str = "ascending"  # ascending | descending
     grasp_retries: int = 2                     # 单块抓起失败后的重试次数（6.7）
+    tesseract_command: str = ""                # OCR exe 绝对路径（非常规安装目录时填）
     staging_area: Vec3 = field(default_factory=Vec3)
     placement_area: Vec3 = field(default_factory=Vec3)
     slots: list[Slot] = field(default_factory=list)
@@ -170,14 +169,18 @@ class PickPipeline:
 
 @dataclass
 class HandPoseSet:
-    """灵巧手预定义姿态（10 维归一化）。"""
+    """灵巧手预定义姿态（10 维归一化）。
+
+    open/close 有安全默认（张手/握拳）；四个任务手型默认全占位——
+    未标定时 ``hand_pose_table`` 拒动，绝不静默用 [0]*10（全握拳）上场。
+    """
 
     open: list[float] = field(default_factory=lambda: [1.0] * 10)
     close: list[float] = field(default_factory=lambda: [0.0] * 10)
-    grasp_digit: list[float] = field(default_factory=lambda: [0.0] * 10)
-    grasp_shape: list[float] = field(default_factory=lambda: [0.0] * 10)
-    tap: list[float] = field(default_factory=lambda: [0.0] * 10)
-    flick: list[float] = field(default_factory=lambda: [0.0] * 10)
+    grasp_digit: list[float] = field(default_factory=lambda: [PLACEHOLDER] * 10)
+    grasp_shape: list[float] = field(default_factory=lambda: [PLACEHOLDER] * 10)
+    tap: list[float] = field(default_factory=lambda: [PLACEHOLDER] * 10)
+    flick: list[float] = field(default_factory=lambda: [PLACEHOLDER] * 10)
 
 
 @dataclass
@@ -229,7 +232,11 @@ class SiteConfig:
 
 
 def _to_float(v: Any, default: Any = PLACEHOLDER) -> Any:
-    """YAML 解析时把字符串占位保留为占位；其它能转 float 就转。"""
+    """YAML 解析时把字符串占位保留为占位；其它能转 float 就转。
+
+    nan/inf 一律按占位处理：``float("nan")`` 能转换成功，但 nan 不是合法坐标——
+    放行后坐标一路走到 safe_box 才报"越出安全区"，现场会误改安全区而不查标定值。
+    """
 
     if v is None:
         return default
@@ -237,14 +244,22 @@ def _to_float(v: Any, default: Any = PLACEHOLDER) -> Any:
         if v.strip() == PLACEHOLDER or v.strip() == "":
             return default
         try:
-            return float(v)
+            f = float(v)
         except ValueError:
             LOG.warning("无法解析数值 '%s'，保留为占位", v)
             return PLACEHOLDER
+        if not math.isfinite(f):
+            LOG.warning("数值 '%s' 是 nan/inf，按占位处理", v)
+            return PLACEHOLDER
+        return f
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return PLACEHOLDER
+    if not math.isfinite(f):
+        LOG.warning("数值 %r 是 nan/inf，按占位处理", v)
+        return PLACEHOLDER
+    return f
 
 
 def _to_int(v: Any, default: int = 0) -> int:
@@ -283,17 +298,25 @@ def _to_bool(v: Any, default: bool = False) -> bool:
 
 
 def _to_pose_list(v: Any, default: list[float]) -> list[float]:
-    """手型数组解析：占位/非数值项按 0.0 兜底并告警，绝不让启动崩在裸 float() 上。"""
+    """手型数组解析：占位/非数值项**保留占位标记**（不再按 0.0 兜底——
+    0.0 是"手指握紧"，静默当手型用比拒动危险）；``hand_pose_table`` 对含占位
+    的手型拒动并指名。绝不让启动崩在裸 float() 上。"""
 
     if not isinstance(v, list):
         return list(default)
     out: list[float] = []
     for x in v:
+        if is_placeholder(x):
+            out.append(PLACEHOLDER)
+            continue
         try:
-            out.append(float(x))
+            f = float(x)
+            if not math.isfinite(f):
+                raise ValueError("nan/inf")
+            out.append(f)
         except (TypeError, ValueError):
-            LOG.warning("手型含不可解析项 %r，按 0.0 兜底", x)
-            out.append(0.0)
+            LOG.warning("手型含不可解析项 %r，按占位处理（任务层将拒动）", x)
+            out.append(PLACEHOLDER)
     while len(out) < 10:
         out.append(0.0)
     return out[:10]
@@ -475,10 +498,10 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
     hand = HandPoseSet(
         open=_to_pose_list(poses_raw.get("open"), [1.0] * 10),
         close=_to_pose_list(poses_raw.get("close"), [0.0] * 10),
-        grasp_digit=_to_pose_list(poses_raw.get("grasp_digit"), [0.0] * 10),
-        grasp_shape=_to_pose_list(poses_raw.get("grasp_shape"), [0.0] * 10),
-        tap=_to_pose_list(poses_raw.get("tap"), [0.0] * 10),
-        flick=_to_pose_list(poses_raw.get("flick"), [0.0] * 10),
+        grasp_digit=_to_pose_list(poses_raw.get("grasp_digit"), [PLACEHOLDER] * 10),
+        grasp_shape=_to_pose_list(poses_raw.get("grasp_shape"), [PLACEHOLDER] * 10),
+        tap=_to_pose_list(poses_raw.get("tap"), [PLACEHOLDER] * 10),
+        flick=_to_pose_list(poses_raw.get("flick"), [PLACEHOLDER] * 10),
     )
 
     panel_raw = raw.get("panel", {}) or {}
@@ -493,6 +516,7 @@ def from_dict(raw: dict[str, Any]) -> SiteConfig:
         expected_count=_to_int(db_raw.get("expected_count"), 0),
         placement_order_target=_to_str(db_raw.get("placement_order_target"), "ascending"),
         grasp_retries=_to_int(db_raw.get("grasp_retries"), 2),
+        tesseract_command=_to_str(db_raw.get("tesseract_command"), ""),
         staging_area=_to_vec3(db_raw.get("staging_area")),
         placement_area=_to_vec3(db_raw.get("placement_area")),
         slots=_to_slots(db_raw.get("slots", [])),

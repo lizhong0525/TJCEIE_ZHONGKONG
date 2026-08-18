@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -45,7 +46,13 @@ def _ask_str(prompt: str, default: str) -> str:
 
 
 def _ask_float(prompt: str, default: float) -> float:
-    return _ask(prompt, float, default)
+    def _finite(raw: str) -> float:
+        f = float(raw)
+        if not math.isfinite(f):
+            raise ValueError("nan/inf 不是合法标定值")
+        return f
+
+    return _ask(prompt, _finite, default)
 
 
 def _ask_int(prompt: str, default: int) -> int:
@@ -53,12 +60,21 @@ def _ask_int(prompt: str, default: int) -> int:
 
 
 def _ask_vec3(prefix: str, default: dict[str, Any]) -> dict[str, Any]:
-    print(f"  {prefix}  (回车跳过沿用旧值)")
-    return {
+    print(f"  {prefix}  (回车跳过沿用旧值；单位米，0.005=5mm)")
+    out = {
         "x": _ask_float("    x", default.get("x", PLACEHOLDER)),
         "y": _ask_float("    y", default.get("y", PLACEHOLDER)),
         "z": _ask_float("    z", default.get("z", PLACEHOLDER)),
     }
+    # 防手滑提醒（不拦截）：右臂工作区 |y| 一般 <0.5m、台面高度 z 一般 <0.7m
+    try:
+        if abs(float(out["y"])) > 0.5:
+            print(f"  ! 提醒：|y|={out['y']} 超出常见工作区（>0.5m），请核对")
+        if float(out["z"]) > 0.7:
+            print(f"  ! 提醒：z={out['z']} 高出常见台面（>0.7m），请核对")
+    except (TypeError, ValueError):
+        pass
+    return out
 
 
 def _ensure_section(raw: dict[str, Any], key: str) -> dict[str, Any]:
@@ -97,7 +113,8 @@ def calibrate_site(config_path: Path) -> None:
     rows = he.get("rows")
     if not (isinstance(rows, list) and len(rows) == 4):
         rows = [[PLACEHOLDER] * 4 for _ in range(4)]
-    print("\n[3/7] 手眼矩阵（基座→相机，4x4，每行 4 个空格分隔）")
+    print("\n[3/7] 手眼矩阵（T_end_camera：相机→末端，4x4，每行 4 个空格分隔；"
+          "直接填 04-相机 results/hand_eye.json 的 t_end_camera 原值，不要再乘任何链）")
     new_rows: list[list[float]] = []
     for i in range(4):
         default_row = [str(c) for c in rows[i]]
@@ -105,7 +122,19 @@ def calibrate_site(config_path: Path) -> None:
         parts = line.replace(",", " ").split()
         while len(parts) < 4:
             parts.append(PLACEHOLDER)
-        new_rows.append([float(p) if p != PLACEHOLDER else PLACEHOLDER for p in parts[:4]])
+        row: list[Any] = []
+        for p in parts[:4]:
+            if p == PLACEHOLDER:
+                row.append(PLACEHOLDER)
+            else:
+                try:
+                    f = float(p)
+                    row.append(f if math.isfinite(f) else PLACEHOLDER)
+                except ValueError:
+                    # 非法输入保留占位（任务层拒动），绝不崩掉整个标定会话
+                    print(f"  ! 无法解析 {p!r}，该格保留占位")
+                    row.append(PLACEHOLDER)
+        new_rows.append(row)
     he["rows"] = new_rows
 
     # 3. 安全区
@@ -231,6 +260,17 @@ def calibrate_site(config_path: Path) -> None:
         new_kinds.append({"name": name, "slots": new_k_slots})
     sh["kinds"] = new_kinds
 
+    # 落盘前防手滑：打印全部占位/数值摘要 + 二次确认
+    from algorithm_service.config import collect_placeholders, from_dict
+
+    remaining = collect_placeholders(from_dict(raw))
+    print("\n== 落盘前核对 ==")
+    print(f"  仍为占位的项（{len(remaining)}）："
+          + (", ".join(remaining[:10]) + (" …" if len(remaining) > 10 else "") if remaining else "无"))
+    confirm = input(f"确认写入 {config_path}？输入 y 落盘，其它键取消: ").strip().lower()
+    if confirm != "y":
+        print("已取消，site.yaml 未修改。")
+        return
     write(config_path, raw)
     print(f"\n[OK] 已写入 {config_path}")
 

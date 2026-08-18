@@ -63,6 +63,7 @@ class Vision:
         self.health_ready = True
         self._lock = threading.Lock()
         self._pipeline = None
+        self._align_filter = None
         self._init_sdk()
 
     @staticmethod
@@ -92,19 +93,35 @@ class Vision:
         try:
             self._pipeline = ob.Pipeline()
             cfg = ob.Config()
-            # 启用彩色 + 深度
+            # 启用彩色 + 深度；深度启用失败是 🟠 级隐患（task2/3 会无深度拒动），升 error 级
+            color_ok = depth_ok = False
             try:
                 color_profile = self._pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR).get_default_video_stream_profile()
                 cfg.enable_stream(color_profile)
+                color_ok = True
             except Exception as e:  # noqa: BLE001
-                LOG.warning("启用彩色流失败: %s", e)
+                LOG.error("启用彩色流失败: %s", e)
             try:
                 depth_profile = self._pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR).get_default_video_stream_profile()
                 cfg.enable_stream(depth_profile)
+                depth_ok = True
             except Exception as e:  # noqa: BLE001
-                LOG.warning("启用深度流失败: %s", e)
+                LOG.error("启用深度流失败: %s（task2/task3 将按'无深度图'拒动）", e)
+            # 与 04-相机对齐：帧同步 + D2C（深度对齐到彩色），否则彩色/深度分辨率
+            # 不同时像素直接索引深度图会静默拿错坐标
+            if depth_ok:
+                try:
+                    self._pipeline.enable_frame_sync()
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("enable_frame_sync 不可用: %s", e)
+                try:
+                    self._align_filter = ob.AlignFilter(align_to_stream=ob.OBStreamType.COLOR_STREAM)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("AlignFilter 不可用: %s（采集时将校验彩色/深度尺寸一致）", e)
+                    self._align_filter = None
             self._pipeline.start(cfg)
-            LOG.info("Orbbec Pipeline 已启动")
+            LOG.info("Orbbec Pipeline 已启动（彩色=%s 深度=%s D2C对齐=%s）",
+                     color_ok, depth_ok, self._align_filter is not None)
         except Exception as e:  # noqa: BLE001
             LOG.error("Orbbec Pipeline 启动失败: %s", e)
             self._pipeline = None
@@ -129,6 +146,14 @@ class Vision:
         with self._lock:
             try:
                 frames = self._pipeline.wait_for_frames(timeout_ms)
+                if frames is not None and self._align_filter is not None:
+                    # D2C：深度对齐到彩色（与 04-相机同一条链）
+                    aligned = self._align_filter.process(frames)
+                    if aligned is not None:
+                        frames = (
+                            aligned.as_frame_set()
+                            if hasattr(aligned, "as_frame_set") else aligned
+                        )
             except Exception as e:  # noqa: BLE001
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= self._max_fail:
@@ -140,6 +165,12 @@ class Vision:
         depth = self._depth_from(frames)
         if color is None:
             raise VisionError("未拿到彩色帧")
+        if depth is not None and depth.shape[:2] != color.shape[:2]:
+            # 彩色/深度分辨率不一致时像素直接索引深度图 = 静默错坐标，必须明确失败
+            raise VisionError(
+                f"彩色与深度分辨率不一致（color={color.shape[:2]}, depth={depth.shape[:2]}）："
+                f"D2C 对齐未生效，拒绝解算（检查 AlignFilter/流配置）"
+            )
         return Frame(
             color=color,
             depth=depth,
@@ -170,9 +201,18 @@ class Vision:
         depth = frames.get_depth_frame() if hasattr(frames, "get_depth_frame") else None
         if depth is None:
             return None
-        return np.frombuffer(depth.get_data(), dtype=np.uint16).reshape(
+        raw = np.frombuffer(depth.get_data(), dtype=np.uint16).reshape(
             depth.get_height(), depth.get_width()
         )
+        # 深度缩放：raw uint16 × get_depth_scale() = 毫米（与 04-相机一致；
+        # 漏乘 scale 时深度值错但不越界，是最阴的静默错坐标）
+        try:
+            scale = float(depth.get_depth_scale())
+        except Exception:  # noqa: BLE001
+            scale = 1.0
+        if scale and scale != 1.0:
+            return raw.astype(np.float32) * scale
+        return raw
 
     # ---- 手眼变换 ---------------------------------------------------------
 

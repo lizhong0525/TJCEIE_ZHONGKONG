@@ -52,9 +52,9 @@ def _tesseract_cmd(settings: dict) -> str | None:
             seen.add(cand)
             if _tessdata_ok(cand):
                 return cand
-    for cand in seen:  # 都不带 eng 数据时退而求其次，至少试跑
-        LOG.warning("tesseract %s 缺少 tessdata/eng.traineddata，OCR 可能失败", cand)
-        return cand
+            LOG.warning("tesseract %s 缺少 tessdata/eng.traineddata，跳过该候选", cand)
+    if seen:
+        LOG.warning("所有 tesseract 候选都缺 eng 语言数据，OCR 明确不可用：%s", sorted(seen))
     return None
 
 
@@ -80,6 +80,10 @@ def _ocr_patch(roi_bgr: np.ndarray, cmd: str) -> int | None:
             capture_output=True, text=True, timeout=5,
         )
         txt = (out.stdout or "").strip()
+    except subprocess.TimeoutExpired:
+        # 单块超时只丢这一块，绝不把裸异常抛穿整个识别流程
+        LOG.warning("tesseract OCR 超时（5s），放弃该块")
+        return None
     finally:
         try:
             os.unlink(tmp)
